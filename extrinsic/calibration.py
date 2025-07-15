@@ -7,7 +7,6 @@ from scipy.optimize import minimize
 from scipy.spatial.transform import Rotation as R
 import matplotlib.pyplot as plt
 from dataclasses import dataclass
-import glob
 
 @dataclass
 class CameraPose:

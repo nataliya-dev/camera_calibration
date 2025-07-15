@@ -15,13 +15,6 @@ IMAGE_PATTERN = "calib_*.jpg"  # Pattern to match calibration images
 CHESSBOARD_SIZE = (7, 6)  # Internal corners (width, height)
 SQUARE_SIZE = 25.0  # Size of chessboard square in mm
 
-# Calibration settings
-CALIBRATION_FLAGS = (
-    cv2.CALIB_FIX_ASPECT_RATIO +
-    cv2.CALIB_ZERO_TANGENT_DIST +
-    cv2.CALIB_FIX_PRINCIPAL_POINT
-)
-
 # Debug settings
 DEBUG_MODE = True  # Show detailed debug information
 SAVE_DEBUG_IMAGES = True  # Save images with detected corners
@@ -153,12 +146,12 @@ def perform_calibration(object_points, image_points, image_size):
     camera_matrix[1, 2] = image_size[1] / 2  # cy
     
     # Initialize distortion coefficients
-    dist_coeffs = np.zeros((4, 1), dtype=np.float32)
+    dist_coeffs = np.zeros((5, 1), dtype=np.float32)
     
     # Perform calibration
     ret, camera_matrix, dist_coeffs, rvecs, tvecs = cv2.calibrateCamera(
         object_points, image_points, image_size, 
-        camera_matrix, dist_coeffs, flags=CALIBRATION_FLAGS
+        camera_matrix, dist_coeffs
     )
     
     return ret, camera_matrix, dist_coeffs, rvecs, tvecs
@@ -243,8 +236,7 @@ def save_calibration_results(camera_matrix, dist_coeffs, image_size, reprojectio
         'timestamp': timestamp,
         'calibration_settings': {
             'chessboard_size': CHESSBOARD_SIZE,
-            'square_size_mm': SQUARE_SIZE,
-            'calibration_flags': CALIBRATION_FLAGS
+            'square_size_mm': SQUARE_SIZE
         }
     }
     
