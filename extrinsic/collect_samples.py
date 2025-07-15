@@ -11,7 +11,7 @@ import cv2
 import numpy as np
 from typing import List, Tuple, Dict
 from scipy.spatial.transform import Rotation as R
-from franky import Robot, Affine, CartesianMotion, ReferenceType
+from franky import *
 import itertools
 
 # =============================================================================
@@ -19,7 +19,7 @@ import itertools
 # =============================================================================
 
 # Robot connection
-ROBOT_IP = "172.16.0.2"
+ROBOT_IP = "192.168.0.2"
 
 # Data collection paths
 DATA_DIR = "calibration_data"
@@ -28,40 +28,68 @@ EXTERNAL_IMAGES_DIR = os.path.join(DATA_DIR, "external_camera")
 EE_POSES_FILE = os.path.join(DATA_DIR, "ee_poses.json")
 
 # Camera configuration
-HAND_CAMERA_ID = 0      # USB camera ID for hand camera
-EXTERNAL_CAMERA_ID = 1  # USB camera ID for external camera
+HAND_CAMERA_ID = 2      # USB camera ID for hand camera
+EXTERNAL_CAMERA_ID = 0  # USB camera ID for external camera
 IMAGE_WIDTH = 640
 IMAGE_HEIGHT = 480
 
 # Camera settings - following calibration script pattern
-USE_AUTOFOCUS = "fixed"  # Options: "enabled", "disabled", "fixed"
-CAPTURE_WARMUP_FRAMES = 10  # Number of frames to skip for camera warmup
+USE_AUTOFOCUS = "disabled"  # Options: "enabled", "disabled", "fixed"
 
 # Camera intrinsic parameters (set these from your camera calibration)
-# Hand camera intrinsics
+# Camera calibration parameters - paste your values here
+fx = 631.79
+fy = 632.83
+cx = 318.46
+cy = 252.47
+
+# Distortion coefficients
+k1 = -0.004328
+k2 = -0.035287
+p1 = 0.005315
+p2 = -0.001739
+k3 = -0.053686
+
+# Generate camera matrix
 HAND_CAMERA_MATRIX = np.array([
-    [800.0, 0.0, 320.0],
-    [0.0, 800.0, 240.0],
+    [fx, 0.0, cx],
+    [0.0, fy, cy],
     [0.0, 0.0, 1.0]
 ])
-HAND_DIST_COEFFS = np.array([0.1, -0.2, 0.0, 0.0, 0.0])
+
+# Generate distortion coefficients array
+HAND_DIST_COEFFS = np.array([k1, k2, p1, p2, k3])
+
+
+# Camera Matrix:
+fx = 279.67
+fy = 254.80
+cx = 189.77
+cy = 243.11
+
+# Distortion Coefficients:
+k1 = 0.042160
+k2 = -0.005600
+p1 = 0.012792
+p2 = -0.043717
+k3 = 0.000835
 
 # External camera intrinsics  
 EXTERNAL_CAMERA_MATRIX = np.array([
-    [1000.0, 0.0, 640.0],
-    [0.0, 1000.0, 480.0],
+    [fx, 0.0, cx],
+    [0.0, fy, cy],
     [0.0, 0.0, 1.0]
 ])
-EXTERNAL_DIST_COEFFS = np.array([0.05, -0.1, 0.0, 0.0, 0.0])
+EXTERNAL_DIST_COEFFS = np.array([k1, k2, p1, p2, k3])
 
 # Robot motion parameters
 ROBOT_DYNAMICS_FACTOR = 0.05  # Reduce speed for safety
-SETTLE_TIME = 2.0  # Time to wait after reaching each pose (seconds)
+SETTLE_TIME = 1.0  # Time to wait after reaching each pose (seconds)
 
 # 3D Grid definition (relative to current robot position)
 # Position grid (meters relative to current position)
-X_POSITIONS = [-0.1, 0.0, 0.1]  # X offsets
-Y_POSITIONS = [-0.1, 0.0, 0.1]  # Y offsets  
+X_POSITIONS = [-0.05, 0.0, 0.05]  # X offsets
+Y_POSITIONS = [-0.05, 0.0, 0.05]  # Y offsets  
 Z_POSITIONS = [-0.05, 0.0, 0.05]  # Z offsets
 
 # Orientation variations (degrees)
@@ -91,13 +119,18 @@ class HandEyeDataCollector:
         """Initialize robot connection"""
         print(f"Connecting to robot at {ROBOT_IP}...")
         self.robot = Robot(ROBOT_IP)
+        self.robot.recover_from_errors()
         self.robot.relative_dynamics_factor = ROBOT_DYNAMICS_FACTOR
-        
+
+
+        home = JointMotion([0.0, -0.785, 0.0, -2.356, 0.0, 1.571, 0.785])
+        self.robot.move(home)
+
         # Store starting pose
         self.start_pose = self.robot.current_cartesian_state.pose.end_effector_pose
         print(f"Starting pose recorded:")
         print(f"Position: {self.start_pose.translation}")
-        print(f"Rotation matrix:\n{self.start_pose.linear}")
+        print(f"Quaternion:\n{self.start_pose.quaternion}")
         
     def initialize_cameras(self):
         """Initialize camera connections following calibration script pattern"""
@@ -116,6 +149,7 @@ class HandEyeDataCollector:
         # Configure both cameras with same settings
         for camera, camera_name in [(self.hand_camera, "hand"), (self.external_camera, "external")]:
             # Set resolution
+            camera.set(cv2.CAP_PROP_BUFFERSIZE, 1)
             camera.set(cv2.CAP_PROP_FRAME_WIDTH, IMAGE_WIDTH)
             camera.set(cv2.CAP_PROP_FRAME_HEIGHT, IMAGE_HEIGHT)
             
@@ -147,14 +181,6 @@ class HandEyeDataCollector:
             self.external_camera.set(cv2.CAP_PROP_AUTOFOCUS, 0)
             print("Autofocus now disabled - focus is fixed for both cameras")
         
-        # Warm up cameras with more frames for stability
-        print(f"Warming up cameras with {CAPTURE_WARMUP_FRAMES} frames...")
-        for i in range(CAPTURE_WARMUP_FRAMES):
-            ret_hand, _ = self.hand_camera.read()
-            ret_external, _ = self.external_camera.read()
-            if not ret_hand or not ret_external:
-                print(f"Warning: Camera read failed during warmup frame {i+1}")
-            time.sleep(0.1)  # Small delay between warmup frames
         
         print("Cameras initialized successfully")
         
@@ -163,7 +189,19 @@ class HandEyeDataCollector:
         poses = []
         sample_id = 0
         
+        # Ensure start pose is recorded
+        if self.start_pose is None:
+            self.start_pose = self.robot.current_cartesian_state.pose.end_effector_pose
+            print(f"Starting pose recorded:")
+            print(f"Position: {self.start_pose.translation}")
+            print(f"Quaternion: {self.start_pose.quaternion}")
+        
         print("Generating target poses...")
+        
+        # Extract start pose components
+        start_position = np.array(self.start_pose.translation)
+        start_quaternion = np.array(self.start_pose.quaternion)  # [x, y, z, w] format
+        start_rotation = R.from_quat(start_quaternion)
         
         for x, y, z in itertools.product(X_POSITIONS, Y_POSITIONS, Z_POSITIONS):
             for roll, pitch, yaw in itertools.product(ROLL_ANGLES, PITCH_ANGLES, YAW_ANGLES):
@@ -177,14 +215,18 @@ class HandEyeDataCollector:
                 # Create relative rotation (in degrees, convert to radians)
                 relative_rotation = R.from_euler('xyz', [roll, pitch, yaw], degrees=True)
                 
-                # Create relative transform
-                relative_transform = Affine(relative_position.tolist(), 
-                                          relative_rotation.as_quat())
+                # Calculate global position by adding relative position to start position
+                global_position = start_position + relative_position
+                
+                # Calculate global rotation by multiplying start rotation with relative rotation
+                global_rotation = start_rotation * relative_rotation
+                global_quaternion = global_rotation.as_quat()  # [x, y, z, w] format
                 
                 # Generate sample ID
                 sample_id_str = f"sample_{sample_id:04d}"
                 
-                poses.append((relative_position, relative_rotation.as_quat(), sample_id_str))
+                # Store global pose
+                poses.append((global_position, global_quaternion, sample_id_str))
                 sample_id += 1
         
         print(f"Generated {len(poses)} target poses")
@@ -193,33 +235,24 @@ class HandEyeDataCollector:
     def capture_images(self, sample_id: str) -> bool:
         """Capture images from both cameras with multiple attempts for stability"""
         try:
-            # Take multiple frames to ensure good capture (following calibration script pattern)
-            max_attempts = 3
-            
-            for attempt in range(max_attempts):
-                # Capture hand camera image
-                ret_hand, hand_image = self.hand_camera.read()
-                if not ret_hand:
-                    print(f"Failed to capture hand camera image for {sample_id}, attempt {attempt+1}")
-                    if attempt < max_attempts - 1:
-                        time.sleep(0.1)
-                        continue
-                    else:
-                        return False
+
+            # Capture hand camera image
+            ret_hand, hand_image = self.hand_camera.read()
+            # cv2.imshow("Hand Camera", hand_image)  # Added window name
+            # cv2.waitKey(1) 
+            if not ret_hand:
+                print(f"Failed to capture hand camera image for {sample_id}")
+
                 
-                # Capture external camera image  
-                ret_external, external_image = self.external_camera.read()
-                if not ret_external:
-                    print(f"Failed to capture external camera image for {sample_id}, attempt {attempt+1}")
-                    if attempt < max_attempts - 1:
-                        time.sleep(0.1)
-                        continue
-                    else:
-                        return False
+            # Capture external camera image  
+            ret_external, external_image = self.external_camera.read()
+            # cv2.imshow("External Camera", external_image)
+            # cv2.waitKey(1) 
+            if not ret_external:
+                print(f"Failed to capture external camera image for {sample_id}")
+
                 
-                # If we got here, both captures succeeded
-                break
-            
+
             # Validate image quality (basic checks)
             if hand_image is None or external_image is None:
                 print(f"Captured images are None for {sample_id}")
@@ -250,41 +283,55 @@ class HandEyeDataCollector:
             print(f"Error capturing images for {sample_id}: {e}")
             return False
     
-    def move_to_pose(self, relative_position: np.ndarray, relative_quaternion: np.ndarray) -> bool:
+    def move_to_pose(self, position: np.ndarray, quaternion: np.ndarray) -> bool:
         """Move robot to target pose"""
         try:
-            # Create relative motion
-            relative_transform = Affine(relative_position.tolist(), relative_quaternion)
-            motion = CartesianMotion(relative_transform, ReferenceType.Relative)
+            relative_transform = Affine(position.tolist(), quaternion.tolist())
+            motion = CartesianMotion(relative_transform)
             
             # Execute motion
-            print(f"Moving to pose: pos={relative_position}, quat={relative_quaternion}")
+            print(f"Moving to pose: pos={position}, quat={quaternion}")
             self.robot.move(motion)
-            
             # Wait for robot to settle
             time.sleep(SETTLE_TIME)
+
+            # Verify we reached the target pose
+            current_state = self.robot.current_cartesian_state
+            current_pose = current_state.pose.end_effector_pose
+            
+            # Check position accuracy
+            pos_error = np.linalg.norm(np.array(current_pose.translation) - position)
+            
+            if pos_error > 0.01:  # 1cm tolerance
+                print(f"Warning: Position error {pos_error:.4f}m - waiting additional time")
+                time.sleep(1.0)  # Additional settling time
+            else:
+                print(f"Pose reached. Position error: {pos_error:.4f}m")
+            
+
             return True
             
         except Exception as e:
             print(f"Error moving to pose: {e}")
             return False
     
-    def collect_sample(self, relative_position: np.ndarray, relative_quaternion: np.ndarray, sample_id: str) -> bool:
+    def collect_sample(self, position: np.ndarray, quaternion: np.ndarray, sample_id: str) -> bool:
         """Collect a single calibration sample"""
         print(f"\nCollecting sample {sample_id}...")
         
         # Move to target pose
-        if not self.move_to_pose(relative_position, relative_quaternion):
+        if not self.move_to_pose(position, quaternion):
             return False
         
         # Get current robot state
         current_state = self.robot.current_cartesian_state
         ee_pose = current_state.pose.end_effector_pose
+
         
         # Store pose data
         pose_data = {
             "position": ee_pose.translation.tolist(),
-            "orientation": R.from_matrix(ee_pose.linear).as_quat().tolist()  # [x, y, z, w]
+            "orientation": ee_pose.quaternion.tolist()  # [x, y, z, w]
         }
         
         # Capture images
@@ -349,10 +396,10 @@ class HandEyeDataCollector:
             successful_samples = 0
             failed_samples = 0
             
-            for i, (rel_pos, rel_quat, sample_id) in enumerate(poses):
+            for i, (pos, quat, sample_id) in enumerate(poses):
                 print(f"\nProgress: {i+1}/{len(poses)}")
                 
-                if self.collect_sample(rel_pos, rel_quat, sample_id):
+                if self.collect_sample(pos, quat, sample_id):
                     successful_samples += 1
                 else:
                     failed_samples += 1

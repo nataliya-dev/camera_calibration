@@ -212,6 +212,7 @@ def main():
     # Set camera properties for better quality
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, TARGET_WIDTH)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, TARGET_HEIGHT)
+    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
     
     # Handle autofocus based on setting
     if USE_AUTOFOCUS == "enabled":
