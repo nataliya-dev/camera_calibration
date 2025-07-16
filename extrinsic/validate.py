@@ -1,396 +1,393 @@
+#!/usr/bin/env python3
+"""
+Hand-Eye Calibration Validation Script
+Validates calibration results and provides diagnostic plots and analysis.
+"""
+
 import numpy as np
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
-import cv2
-from typing import List, Dict
 import json
+import os
+from scipy.spatial.transform import Rotation as R
+from typing import Dict, List, Tuple
+import seaborn as sns
+
+# =============================================================================
+# CONFIGURATION PARAMETERS
+# =============================================================================
+
+# Data paths
+DATA_DIR = "calibration_data"
+CALIBRATION_RESULTS_FILE = "calibration_results.json"
+T_HAND_EYE_FILE = "T_hand_eye.npy"
+T_BASE_EXTERNAL_FILE = "T_base_external.npy"
+
+# Plot settings
+FIGURE_SIZE = (12, 8)
+DPI = 100
+SAVE_PLOTS = True
+PLOT_DIR = "validation_plots"
+
+# Analysis thresholds
+GOOD_ROTATION_ERROR_DEG = 5.0
+GOOD_TRANSLATION_ERROR_M = 0.02
+ACCEPTABLE_ROTATION_ERROR_DEG = 15.0
+ACCEPTABLE_TRANSLATION_ERROR_M = 0.05
+
+# =============================================================================
+# VALIDATION CLASS
+# =============================================================================
+
 
 class CalibrationValidator:
-    """Utilities for validating and testing calibration results"""
-    
-    def __init__(self, T_hand_eye: np.ndarray, T_base_external: np.ndarray):
-        self.T_hand_eye = T_hand_eye
-        self.T_base_external = T_base_external
-    
-    def visualize_setup(self, samples: List, figsize=(12, 8)):
-        """Visualize the calibration setup and results"""
-        
-        fig = plt.figure(figsize=figsize)
-        ax = fig.add_subplot(111, projection='3d')
-        
-        # Plot robot base
-        ax.scatter(0, 0, 0, c='red', s=100, marker='o', label='Robot Base')
-        
-        # Plot end-effector positions
-        ee_positions = np.array([s.ee_position for s in samples])
-        ax.scatter(ee_positions[:, 0], ee_positions[:, 1], ee_positions[:, 2], 
-                  c='blue', s=50, marker='o', alpha=0.7, label='End-Effector Positions')
-        
-        # Plot external camera position
-        external_pos = self.T_base_external[:3, 3]
-        ax.scatter(external_pos[0], external_pos[1], external_pos[2], 
-                  c='green', s=100, marker='^', label='External Camera')
-        
-        # Plot hand camera positions (transformed through kinematic chain)
-        hand_camera_positions = []
-        for sample in samples:
-            T_base_ee = self.ee_pose_to_matrix(sample.ee_position, sample.ee_orientation)
-            T_base_hand = T_base_ee @ self.T_hand_eye
-            hand_camera_positions.append(T_base_hand[:3, 3])
-        
-        hand_camera_positions = np.array(hand_camera_positions)
-        ax.scatter(hand_camera_positions[:, 0], hand_camera_positions[:, 1], 
-                  hand_camera_positions[:, 2], c='orange', s=50, marker='s', 
-                  alpha=0.7, label='Hand Camera Positions')
-        
-        # Plot board positions as detected by both cameras
-        board_positions_hand = []
-        board_positions_external = []
-        
-        for sample in samples:
-            # Board position from hand camera
-            T_base_ee = self.ee_pose_to_matrix(sample.ee_position, sample.ee_orientation)
-            T_hand_board = self.pose_to_matrix(sample.hand_camera_pose.rvec, 
-                                             sample.hand_camera_pose.tvec)
-            T_base_board_hand = T_base_ee @ self.T_hand_eye @ T_hand_board
-            board_positions_hand.append(T_base_board_hand[:3, 3])
-            
-            # Board position from external camera
-            T_external_board = self.pose_to_matrix(sample.external_camera_pose.rvec, 
-                                                 sample.external_camera_pose.tvec)
-            T_base_board_external = self.T_base_external @ T_external_board
-            board_positions_external.append(T_base_board_external[:3, 3])
-        
-        board_positions_hand = np.array(board_positions_hand)
-        board_positions_external = np.array(board_positions_external)
-        
-        ax.scatter(board_positions_hand[:, 0], board_positions_hand[:, 1], 
-                  board_positions_hand[:, 2], c='purple', s=30, marker='o', 
-                  alpha=0.7, label='Board (Hand Camera)')
-        
-        ax.scatter(board_positions_external[:, 0], board_positions_external[:, 1], 
-                  board_positions_external[:, 2], c='pink', s=30, marker='o', 
-                  alpha=0.7, label='Board (External Camera)')
-        
-        ax.set_xlabel('X (m)')
-        ax.set_ylabel('Y (m)')
-        ax.set_zlabel('Z (m)')
-        ax.legend()
-        ax.set_title('Calibration Setup Visualization')
-        
-        plt.tight_layout()
-        plt.show()
-        
-        return fig
-    
-    def plot_error_analysis(self, evaluation_results: Dict):
-        """Plot error analysis"""
-        
-        errors = evaluation_results['individual_errors']
-        
-        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 6))
-        
-        # Rotation errors
+    """Validates hand-eye calibration results"""
+
+    def __init__(self):
+        self.results = None
+        self.T_hand_eye = None
+        self.T_base_external = None
+        self.samples_data = None
+
+    def load_data(self):
+        """Load calibration results and transformation matrices"""
+        print("Loading calibration data...")
+
+        # Load calibration results
+        with open(CALIBRATION_RESULTS_FILE, 'r') as f:
+            self.results = json.load(f)
+
+        # Load transformation matrices
+        self.T_hand_eye = np.load(T_HAND_EYE_FILE)
+        self.T_base_external = np.load(T_BASE_EXTERNAL_FILE)
+
+        # Load end-effector poses
+        ee_poses_file = os.path.join(DATA_DIR, "ee_poses.json")
+        with open(ee_poses_file, 'r') as f:
+            self.samples_data = json.load(f)
+
+        print(
+            f"Loaded {len(self.results['evaluation']['individual_errors'])} samples")
+
+    def create_plots_directory(self):
+        """Create directory for saving plots"""
+        if SAVE_PLOTS:
+            os.makedirs(PLOT_DIR, exist_ok=True)
+
+    def plot_error_distribution(self):
+        """Plot error distribution histograms"""
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=FIGURE_SIZE)
+
+        errors = self.results['evaluation']['individual_errors']
         rotation_errors = [e['rotation_error_deg'] for e in errors]
-        ax1.bar(range(len(rotation_errors)), rotation_errors, alpha=0.7, color='skyblue')
-        ax1.axhline(y=evaluation_results['mean_rotation_error_deg'], 
-                   color='red', linestyle='--', label=f"Mean: {evaluation_results['mean_rotation_error_deg']:.2f}°")
-        ax1.set_xlabel('Sample Index')
+        translation_errors = [e['translation_error_m'] for e in errors]
+
+        # Rotation errors
+        ax1.hist(rotation_errors, bins=10, alpha=0.7,
+                 color='skyblue', edgecolor='black')
+        ax1.axvline(GOOD_ROTATION_ERROR_DEG, color='green', linestyle='--',
+                    label=f'Good: {GOOD_ROTATION_ERROR_DEG}°')
+        ax1.axvline(ACCEPTABLE_ROTATION_ERROR_DEG, color='orange', linestyle='--',
+                    label=f'Acceptable: {ACCEPTABLE_ROTATION_ERROR_DEG}°')
+        ax1.axvline(np.mean(rotation_errors), color='red', linestyle='-',
+                    label=f'Mean: {np.mean(rotation_errors):.1f}°')
+        ax1.set_xlabel('Rotation Error (degrees)')
+        ax1.set_ylabel('Frequency')
+        ax1.set_title('Rotation Error Distribution')
+        ax1.legend()
+        ax1.grid(True, alpha=0.3)
+
+        # Translation errors
+        ax2.hist(translation_errors, bins=10, alpha=0.7,
+                 color='lightcoral', edgecolor='black')
+        ax2.axvline(GOOD_TRANSLATION_ERROR_M, color='green', linestyle='--',
+                    label=f'Good: {GOOD_TRANSLATION_ERROR_M}m')
+        ax2.axvline(ACCEPTABLE_TRANSLATION_ERROR_M, color='orange', linestyle='--',
+                    label=f'Acceptable: {ACCEPTABLE_TRANSLATION_ERROR_M}m')
+        ax2.axvline(np.mean(translation_errors), color='red', linestyle='-',
+                    label=f'Mean: {np.mean(translation_errors):.3f}m')
+        ax2.set_xlabel('Translation Error (meters)')
+        ax2.set_ylabel('Frequency')
+        ax2.set_title('Translation Error Distribution')
+        ax2.legend()
+        ax2.grid(True, alpha=0.3)
+
+        plt.tight_layout()
+        if SAVE_PLOTS:
+            plt.savefig(os.path.join(
+                PLOT_DIR, 'error_distribution.png'), dpi=DPI)
+        plt.show()
+
+    def plot_error_per_sample(self):
+        """Plot errors per sample to identify problematic samples"""
+        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=FIGURE_SIZE)
+
+        errors = self.results['evaluation']['individual_errors']
+        sample_ids = [e['sample_id'] for e in errors]
+        rotation_errors = [e['rotation_error_deg'] for e in errors]
+        translation_errors = [e['translation_error_m'] for e in errors]
+
+        # Rotation errors per sample
+        bars1 = ax1.bar(range(len(sample_ids)), rotation_errors,
+                        alpha=0.7, color='skyblue')
+        ax1.axhline(GOOD_ROTATION_ERROR_DEG, color='green',
+                    linestyle='--', label='Good')
+        ax1.axhline(ACCEPTABLE_ROTATION_ERROR_DEG, color='orange',
+                    linestyle='--', label='Acceptable')
         ax1.set_ylabel('Rotation Error (degrees)')
         ax1.set_title('Rotation Error per Sample')
         ax1.legend()
         ax1.grid(True, alpha=0.3)
-        
-        # Translation errors
-        translation_errors = [e['translation_error_m'] for e in errors]
-        ax2.bar(range(len(translation_errors)), translation_errors, alpha=0.7, color='lightcoral')
-        ax2.axhline(y=evaluation_results['mean_translation_error_m'], 
-                   color='red', linestyle='--', label=f"Mean: {evaluation_results['mean_translation_error_m']:.4f}m")
+
+        # Highlight problematic samples
+        for i, (bar, error) in enumerate(zip(bars1, rotation_errors)):
+            if error > ACCEPTABLE_ROTATION_ERROR_DEG:
+                bar.set_color('red')
+                bar.set_alpha(0.8)
+
+        # Translation errors per sample
+        bars2 = ax2.bar(range(len(sample_ids)),
+                        translation_errors, alpha=0.7, color='lightcoral')
+        ax2.axhline(GOOD_TRANSLATION_ERROR_M, color='green',
+                    linestyle='--', label='Good')
+        ax2.axhline(ACCEPTABLE_TRANSLATION_ERROR_M, color='orange',
+                    linestyle='--', label='Acceptable')
         ax2.set_xlabel('Sample Index')
-        ax2.set_ylabel('Translation Error (m)')
+        ax2.set_ylabel('Translation Error (meters)')
         ax2.set_title('Translation Error per Sample')
         ax2.legend()
         ax2.grid(True, alpha=0.3)
-        
+
+        # Highlight problematic samples
+        for i, (bar, error) in enumerate(zip(bars2, translation_errors)):
+            if error > ACCEPTABLE_TRANSLATION_ERROR_M:
+                bar.set_color('red')
+                bar.set_alpha(0.8)
+
         plt.tight_layout()
+        if SAVE_PLOTS:
+            plt.savefig(os.path.join(
+                PLOT_DIR, 'error_per_sample.png'), dpi=DPI)
         plt.show()
-        
-        return fig
-    
+
+    def plot_3d_poses(self):
+        """Plot 3D visualization of robot poses and camera positions"""
+        fig = plt.figure(figsize=(15, 10))
+
+        # Extract end-effector positions
+        ee_positions = []
+        for sample_id, pose_data in self.samples_data.items():
+            ee_positions.append(pose_data["position"])
+        ee_positions = np.array(ee_positions)
+
+        # Calculate camera positions
+        hand_cam_positions = []
+        for pos, quat in zip(ee_positions, [self.samples_data[sid]["orientation"] for sid in self.samples_data]):
+            T_base_ee = self.ee_pose_to_matrix(pos, quat)
+            T_base_hand_cam = T_base_ee @ self.T_hand_eye
+            hand_cam_positions.append(T_base_hand_cam[:3, 3])
+        hand_cam_positions = np.array(hand_cam_positions)
+
+        # External camera position
+        ext_cam_pos = self.T_base_external[:3, 3]
+
+        # Create 3D plot
+        ax = fig.add_subplot(111, projection='3d')
+
+        # Plot end-effector positions
+        ax.scatter(ee_positions[:, 0], ee_positions[:, 1], ee_positions[:, 2],
+                   c='blue', s=50, alpha=0.7, label='End-Effector Poses')
+
+        # Plot hand camera positions
+        ax.scatter(hand_cam_positions[:, 0], hand_cam_positions[:, 1], hand_cam_positions[:, 2],
+                   c='red', s=50, alpha=0.7, label='Hand Camera Poses')
+
+        # Plot external camera position
+        ax.scatter(ext_cam_pos[0], ext_cam_pos[1], ext_cam_pos[2],
+                   c='green', s=200, marker='^', label='External Camera')
+
+        # Connect EE to hand camera for each sample
+        for i in range(len(ee_positions)):
+            ax.plot([ee_positions[i, 0], hand_cam_positions[i, 0]],
+                    [ee_positions[i, 1], hand_cam_positions[i, 1]],
+                    [ee_positions[i, 2], hand_cam_positions[i, 2]],
+                    'k-', alpha=0.3, linewidth=0.5)
+
+        # Add coordinate frame at origin
+        ax.plot([0, 0.1], [0, 0], [0, 0], 'r-', linewidth=3, label='X-axis')
+        ax.plot([0, 0], [0, 0.1], [0, 0], 'g-', linewidth=3, label='Y-axis')
+        ax.plot([0, 0], [0, 0], [0, 0.1], 'b-', linewidth=3, label='Z-axis')
+
+        ax.set_xlabel('X (meters)')
+        ax.set_ylabel('Y (meters)')
+        ax.set_zlabel('Z (meters)')
+        ax.set_title('3D Visualization of Calibration Setup')
+        ax.legend()
+
+        # Equal aspect ratio
+        max_range = np.array([ee_positions.max()-ee_positions.min(),
+                             hand_cam_positions.max()-hand_cam_positions.min()]).max() / 2.0
+        mid_x = (ee_positions[:, 0].max() + ee_positions[:, 0].min()) * 0.5
+        mid_y = (ee_positions[:, 1].max() + ee_positions[:, 1].min()) * 0.5
+        mid_z = (ee_positions[:, 2].max() + ee_positions[:, 2].min()) * 0.5
+        ax.set_xlim(mid_x - max_range, mid_x + max_range)
+        ax.set_ylim(mid_y - max_range, mid_y + max_range)
+        ax.set_zlim(mid_z - max_range, mid_z + max_range)
+
+        plt.tight_layout()
+        if SAVE_PLOTS:
+            plt.savefig(os.path.join(PLOT_DIR, '3d_poses.png'), dpi=DPI)
+        plt.show()
+
+    def plot_transformation_analysis(self):
+        """Analyze transformation matrices"""
+        fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(15, 10))
+
+        # Hand-eye transformation
+        R_he = self.T_hand_eye[:3, :3]
+        t_he = self.T_hand_eye[:3, 3]
+
+        # Base-external transformation
+        R_be = self.T_base_external[:3, :3]
+        t_be = self.T_base_external[:3, 3]
+
+        # Hand-eye rotation matrix heatmap
+        im1 = ax1.imshow(R_he, cmap='RdBu', vmin=-1, vmax=1)
+        ax1.set_title('Hand-Eye Rotation Matrix')
+        ax1.set_xlabel('Column')
+        ax1.set_ylabel('Row')
+        for i in range(3):
+            for j in range(3):
+                ax1.text(j, i, f'{R_he[i,j]:.3f}', ha='center', va='center')
+        plt.colorbar(im1, ax=ax1)
+
+        # Base-external rotation matrix heatmap
+        im2 = ax2.imshow(R_be, cmap='RdBu', vmin=-1, vmax=1)
+        ax2.set_title('Base-External Rotation Matrix')
+        ax2.set_xlabel('Column')
+        ax2.set_ylabel('Row')
+        for i in range(3):
+            for j in range(3):
+                ax2.text(j, i, f'{R_be[i,j]:.3f}', ha='center', va='center')
+        plt.colorbar(im2, ax=ax2)
+
+        # Translation vectors
+        ax3.bar(['X', 'Y', 'Z'], t_he, alpha=0.7, color='skyblue')
+        ax3.set_title('Hand-Eye Translation Vector')
+        ax3.set_ylabel('Translation (meters)')
+        ax3.grid(True, alpha=0.3)
+        for i, v in enumerate(t_he):
+            ax3.text(i, v + 0.01*np.sign(v),
+                     f'{v:.3f}', ha='center', va='bottom')
+
+        ax4.bar(['X', 'Y', 'Z'], t_be, alpha=0.7, color='lightcoral')
+        ax4.set_title('Base-External Translation Vector')
+        ax4.set_ylabel('Translation (meters)')
+        ax4.grid(True, alpha=0.3)
+        for i, v in enumerate(t_be):
+            ax4.text(i, v + 0.01*np.sign(v),
+                     f'{v:.3f}', ha='center', va='bottom')
+
+        plt.tight_layout()
+        if SAVE_PLOTS:
+            plt.savefig(os.path.join(
+                PLOT_DIR, 'transformation_analysis.png'), dpi=DPI)
+        plt.show()
+
     def ee_pose_to_matrix(self, position: np.ndarray, quaternion: np.ndarray) -> np.ndarray:
         """Convert end-effector pose to transformation matrix"""
-        from scipy.spatial.transform import Rotation as R
         T = np.eye(4)
         T[:3, :3] = R.from_quat(quaternion).as_matrix()
         T[:3, 3] = position
         return T
-    
-    def pose_to_matrix(self, rvec: np.ndarray, tvec: np.ndarray) -> np.ndarray:
-        """Convert rotation vector and translation to transformation matrix"""
-        from scipy.spatial.transform import Rotation as R
-        T = np.eye(4)
-        T[:3, :3] = R.from_rotvec(rvec).as_matrix()
-        T[:3, 3] = tvec
-        return T
-    
-    def test_new_position(self, ee_position: np.ndarray, ee_orientation: np.ndarray,
-                         hand_camera_image: np.ndarray, external_camera_image: np.ndarray,
-                         hand_camera_matrix: np.ndarray, hand_dist_coeffs: np.ndarray,
-                         external_camera_matrix: np.ndarray, external_dist_coeffs: np.ndarray,
-                         detector) -> Dict:
-        """Test calibration with a new robot position"""
-        
-        # Detect board poses
-        hand_pose = detector.detect_pose(hand_camera_image, hand_camera_matrix, hand_dist_coeffs)
-        external_pose = detector.detect_pose(external_camera_image, external_camera_matrix, external_dist_coeffs)
-        
-        if not (hand_pose.success and external_pose.success):
-            return {"success": False, "reason": "ChArUco detection failed"}
-        
-        # Compute board positions using calibrated transformations
-        T_base_ee = self.ee_pose_to_matrix(ee_position, ee_orientation)
-        T_hand_board = self.pose_to_matrix(hand_pose.rvec, hand_pose.tvec)
-        T_external_board = self.pose_to_matrix(external_pose.rvec, external_pose.tvec)
-        
-        # Board position from hand camera
-        T_base_board_hand = T_base_ee @ self.T_hand_eye @ T_hand_board
-        
-        # Board position from external camera
-        T_base_board_external = self.T_base_external @ T_external_board
-        
-        # Compute error
-        error_matrix = T_base_board_hand @ np.linalg.inv(T_base_board_external)
-        
-        from scipy.spatial.transform import Rotation as R
-        R_error = error_matrix[:3, :3]
-        t_error = error_matrix[:3, 3]
-        
-        rotation_error = np.linalg.norm(R.from_matrix(R_error).as_rotvec())
-        translation_error = np.linalg.norm(t_error)
-        
-        return {
-            "success": True,
-            "rotation_error_deg": np.degrees(rotation_error),
-            "translation_error_m": translation_error,
-            "board_position_hand": T_base_board_hand[:3, 3],
-            "board_position_external": T_base_board_external[:3, 3],
-            "position_difference": np.linalg.norm(T_base_board_hand[:3, 3] - T_base_board_external[:3, 3])
-        }
 
-class DataQualityChecker:
-    """Check quality of calibration data before running optimization"""
-    
-    def __init__(self, samples: List):
-        self.samples = samples
-    
-    def check_data_quality(self) -> Dict:
-        """Comprehensive data quality check"""
-        
-        results = {
-            "num_samples": len(self.samples),
-            "workspace_coverage": self.check_workspace_coverage(),
-            "orientation_diversity": self.check_orientation_diversity(),
-            "detection_quality": self.check_detection_quality(),
-            "motion_analysis": self.check_motion_analysis(),
-            "recommendations": []
-        }
-        
-        # Generate recommendations
-        if results["num_samples"] < 10:
-            results["recommendations"].append("Consider collecting more samples (recommended: 15-30)")
-        
-        if results["workspace_coverage"]["volume"] < 0.01:  # Less than 0.01 m³
-            results["recommendations"].append("Increase workspace coverage - move robot to more diverse positions")
-        
-        if results["orientation_diversity"]["std"] < 0.5:  # Low orientation diversity
-            results["recommendations"].append("Increase orientation diversity - rotate end-effector more")
-        
-        if results["detection_quality"]["avg_corners"] < 20:
-            results["recommendations"].append("Improve ChArUco detection - ensure better lighting/board visibility")
-        
-        return results
-    
-    def check_workspace_coverage(self) -> Dict:
-        """Check how well the workspace is covered"""
-        
-        positions = np.array([s.ee_position for s in self.samples])
-        
-        # Compute workspace volume (bounding box)
-        min_pos = np.min(positions, axis=0)
-        max_pos = np.max(positions, axis=0)
-        volume = np.prod(max_pos - min_pos)
-        
-        # Compute average pairwise distance
-        distances = []
-        for i in range(len(positions)):
-            for j in range(i+1, len(positions)):
-                distances.append(np.linalg.norm(positions[i] - positions[j]))
-        
-        return {
-            "volume": volume,
-            "min_position": min_pos.tolist(),
-            "max_position": max_pos.tolist(),
-            "avg_pairwise_distance": np.mean(distances) if distances else 0,
-            "std_pairwise_distance": np.std(distances) if distances else 0
-        }
-    
-    def check_orientation_diversity(self) -> Dict:
-        """Check orientation diversity"""
-        
-        from scipy.spatial.transform import Rotation as R
-        
-        orientations = [s.ee_orientation for s in self.samples]
-        
-        # Convert to rotation matrices and compute angular distances
-        rotations = [R.from_quat(q) for q in orientations]
-        
-        angular_distances = []
-        for i in range(len(rotations)):
-            for j in range(i+1, len(rotations)):
-                # Angular distance between rotations
-                rel_rot = rotations[i].inv() * rotations[j]
-                angle = np.linalg.norm(rel_rot.as_rotvec())
-                angular_distances.append(angle)
-        
-        return {
-            "mean_angular_distance": np.mean(angular_distances) if angular_distances else 0,
-            "std": np.std(angular_distances) if angular_distances else 0,
-            "max_angular_distance": np.max(angular_distances) if angular_distances else 0
-        }
-    
-    def check_detection_quality(self) -> Dict:
-        """Check ChArUco detection quality"""
-        
-        hand_corner_counts = []
-        external_corner_counts = []
-        
-        for sample in self.samples:
-            if sample.hand_camera_pose.success:
-                hand_corner_counts.append(len(sample.hand_camera_pose.corners))
-            if sample.external_camera_pose.success:
-                external_corner_counts.append(len(sample.external_camera_pose.corners))
-        
-        return {
-            "hand_camera_success_rate": len(hand_corner_counts) / len(self.samples),
-            "external_camera_success_rate": len(external_corner_counts) / len(self.samples),
-            "avg_corners": np.mean(hand_corner_counts + external_corner_counts) if hand_corner_counts + external_corner_counts else 0,
-            "min_corners": np.min(hand_corner_counts + external_corner_counts) if hand_corner_counts + external_corner_counts else 0
-        }
-    
-    def check_motion_analysis(self) -> Dict:
-        """Analyze motion patterns"""
-        
-        positions = np.array([s.ee_position for s in self.samples])
-        
-        # Compute motion smoothness (consecutive position differences)
-        motion_distances = []
-        for i in range(len(positions) - 1):
-            motion_distances.append(np.linalg.norm(positions[i+1] - positions[i]))
-        
-        return {
-            "avg_motion_distance": np.mean(motion_distances) if motion_distances else 0,
-            "max_motion_distance": np.max(motion_distances) if motion_distances else 0,
-            "motion_smoothness": np.std(motion_distances) if motion_distances else 0
-        }
-    
-    def generate_report(self) -> str:
-        """Generate a comprehensive quality report"""
-        
-        quality_results = self.check_data_quality()
-        
-        report = f"""
-DATA QUALITY REPORT
-==================
+    def analyze_calibration_quality(self):
+        """Provide detailed analysis of calibration quality"""
+        print("\n" + "="*60)
+        print("CALIBRATION QUALITY ANALYSIS")
+        print("="*60)
 
-Dataset Overview:
-- Number of samples: {quality_results['num_samples']}
-- Workspace volume: {quality_results['workspace_coverage']['volume']:.4f} m³
-- Average sample distance: {quality_results['workspace_coverage']['avg_pairwise_distance']:.3f} m
+        eval_data = self.results['evaluation']
 
-Detection Quality:
-- Hand camera success rate: {quality_results['detection_quality']['hand_camera_success_rate']:.2%}
-- External camera success rate: {quality_results['detection_quality']['external_camera_success_rate']:.2%}
-- Average corners detected: {quality_results['detection_quality']['avg_corners']:.1f}
+        # Overall assessment
+        mean_rot_error = eval_data['mean_rotation_error_deg']
+        mean_trans_error = eval_data['mean_translation_error_m']
 
-Orientation Diversity:
-- Mean angular distance: {np.degrees(quality_results['orientation_diversity']['mean_angular_distance']):.1f}°
-- Max angular distance: {np.degrees(quality_results['orientation_diversity']['max_angular_distance']):.1f}°
+        print(f"\nOverall Assessment:")
+        if mean_rot_error < GOOD_ROTATION_ERROR_DEG and mean_trans_error < GOOD_TRANSLATION_ERROR_M:
+            print("✓ EXCELLENT calibration quality")
+        elif mean_rot_error < ACCEPTABLE_ROTATION_ERROR_DEG and mean_trans_error < ACCEPTABLE_TRANSLATION_ERROR_M:
+            print("⚠ ACCEPTABLE calibration quality")
+        else:
+            print("✗ POOR calibration quality - needs improvement")
 
-Motion Analysis:
-- Average motion distance: {quality_results['motion_analysis']['avg_motion_distance']:.3f} m
-- Motion smoothness (std): {quality_results['motion_analysis']['motion_smoothness']:.3f}
+        # Detailed statistics
+        print(f"\nDetailed Statistics:")
+        print(
+            f"Rotation Error: {mean_rot_error:.1f}° ± {eval_data['std_rotation_error_deg']:.1f}° (max: {eval_data['max_rotation_error_deg']:.1f}°)")
+        print(
+            f"Translation Error: {mean_trans_error:.3f}m ± {eval_data['std_translation_error_m']:.3f}m (max: {eval_data['max_translation_error_m']:.3f}m)")
 
-Recommendations:
-"""
-        
-        for rec in quality_results['recommendations']:
-            report += f"- {rec}\n"
-        
-        if not quality_results['recommendations']:
-            report += "- Data quality looks good for calibration!\n"
-        
-        return report
+        # Problematic samples
+        errors = eval_data['individual_errors']
+        bad_samples = [e for e in errors if e['rotation_error_deg'] > ACCEPTABLE_ROTATION_ERROR_DEG or
+                       e['translation_error_m'] > ACCEPTABLE_TRANSLATION_ERROR_M]
 
-# Usage example and testing utilities
-def run_validation_pipeline(data_dir: str = "calibration_data"):
-    """Complete validation pipeline"""
-    
-    # Load results
-    if not (os.path.exists("T_hand_eye.npy") and os.path.exists("T_base_external.npy")):
-        print("Error: Calibration results not found. Run calibration first.")
-        return
-    
-    T_hand_eye = np.load("T_hand_eye.npy")
-    T_base_external = np.load("T_base_external.npy")
-    
-    # Load samples (simplified - you'd need to reload them)
-    print("Note: This example assumes you have samples loaded.")
-    print("In practice, you'd reload the samples using the DataLoader class.")
-    
-    # Create validator
-    validator = CalibrationValidator(T_hand_eye, T_base_external)
-    
-    # Example of testing with new position
-    print("\nTo test calibration with new position:")
-    print("test_result = validator.test_new_position(ee_pos, ee_quat, hand_img, ext_img, ...)")
-    print("This will give you real-time validation of calibration accuracy.")
-    
-    return validator
+        if bad_samples:
+            print(f"\nProblematic Samples ({len(bad_samples)}):")
+            for sample in bad_samples:
+                print(
+                    f"- {sample['sample_id']}: {sample['rotation_error_deg']:.1f}° rotation, {sample['translation_error_m']:.3f}m translation")
 
-# Save/load calibration results with metadata
-def save_calibration_results(result: Dict, filename: str = "calibration_results.json"):
-    """Save calibration results with metadata"""
-    
-    # Convert numpy arrays to lists for JSON serialization
-    result_json = {
-        "T_hand_eye": result["T_hand_eye"].tolist(),
-        "T_base_external": result["T_base_external"].tolist(),
-        "final_error": float(result["final_error"]),
-        "success": bool(result["success"]),
-        "timestamp": str(np.datetime64('now')),
-        "optimization_info": {
-            "iterations": int(result["optimization_result"].nit) if result["success"] else 0,
-            "function_evaluations": int(result["optimization_result"].nfev) if result["success"] else 0
-        }
-    }
-    
-    with open(filename, 'w') as f:
-        json.dump(result_json, f, indent=2)
-    
-    print(f"Calibration results saved to {filename}")
+        # Recommendations
+        print(f"\nRecommendations:")
+        if mean_rot_error > ACCEPTABLE_ROTATION_ERROR_DEG:
+            print("- High rotation errors: Check camera intrinsic calibration")
+            print("- Consider more diverse robot orientations during data collection")
 
-def load_calibration_results(filename: str = "calibration_results.json") -> Dict:
-    """Load calibration results from JSON file"""
-    
-    with open(filename, 'r') as f:
-        result_json = json.load(f)
-    
-    result = {
-        "T_hand_eye": np.array(result_json["T_hand_eye"]),
-        "T_base_external": np.array(result_json["T_base_external"]),
-        "final_error": result_json["final_error"],
-        "success": result_json["success"],
-        "timestamp": result_json["timestamp"]
-    }
-    
-    return result
+        if mean_trans_error > ACCEPTABLE_TRANSLATION_ERROR_M:
+            print("- High translation errors: Check measurement accuracy of chessboard")
+            print("- Ensure stable camera mounting and good lighting conditions")
+
+        if len(bad_samples) > len(errors) * 0.3:
+            print("- Many problematic samples: Consider re-collecting data")
+            print("- Check for consistent chessboard detection across all images")
+
+        print(
+            f"\nCalibration Success Rate: {(len(errors) - len(bad_samples))/len(errors)*100:.1f}%")
+
+    def run_validation(self):
+        """Run complete validation suite"""
+        print("="*60)
+        print("HAND-EYE CALIBRATION VALIDATION")
+        print("="*60)
+
+        self.load_data()
+        self.create_plots_directory()
+
+        # Generate all plots
+        print("\nGenerating validation plots...")
+        self.plot_error_distribution()
+        self.plot_error_per_sample()
+        self.plot_3d_poses()
+        self.plot_transformation_analysis()
+
+        # Analyze calibration quality
+        self.analyze_calibration_quality()
+
+        if SAVE_PLOTS:
+            print(f"\nPlots saved to: {PLOT_DIR}/")
+
+# =============================================================================
+# MAIN EXECUTION
+# =============================================================================
+
+
+def main():
+    """Main validation pipeline"""
+    validator = CalibrationValidator()
+    validator.run_validation()
+
+
+if __name__ == "__main__":
+    main()
