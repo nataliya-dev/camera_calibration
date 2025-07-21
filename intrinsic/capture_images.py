@@ -15,10 +15,6 @@ IMAGE_PREFIX = "calib_"  # Prefix for saved image files
 # Camera settings - IMPORTANT: Use the same resolution you'll use in your application!
 TARGET_WIDTH = 640  # Set to your target application width
 TARGET_HEIGHT = 480  # Set to your target application height
-USE_AUTOFOCUS = "disabled"  # Options: "enabled", "disabled", "fixed"
-# "enabled" - autofocus throughout (may hurt calibration accuracy)
-# "disabled" - manual focus (may be blurry if not set right)
-# "fixed" - autofocus initially, then fix (recommended)
 
 # Blur detection settings
 ENABLE_BLUR_DETECTION = True  # Reject blurry images automatically
@@ -222,22 +218,7 @@ def main():
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, TARGET_WIDTH)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, TARGET_HEIGHT)
     cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-
-    # Handle autofocus based on setting
-    if USE_AUTOFOCUS == "enabled":
-        cap.set(cv2.CAP_PROP_AUTOFOCUS, 1)
-        print("Autofocus: Enabled throughout capture")
-    elif USE_AUTOFOCUS == "disabled":
-        cap.set(cv2.CAP_PROP_AUTOFOCUS, 0)
-        print("Autofocus: Disabled (manual focus)")
-    elif USE_AUTOFOCUS == "fixed":
-        # Enable autofocus initially, then disable after focusing
-        cap.set(cv2.CAP_PROP_AUTOFOCUS, 1)
-        print("Autofocus: Enabled for initial focus, then will be fixed")
-        print("Position chessboard at typical distance and wait for focus...")
-        time.sleep(3)  # Give time to focus
-        cap.set(cv2.CAP_PROP_AUTOFOCUS, 0)
-        print("Autofocus: Now disabled - focus is fixed")
+    cap.set(cv2.CAP_PROP_AUTOFOCUS, 0)  # disabled
 
     # Get actual resolution (may differ from requested)
     actual_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))

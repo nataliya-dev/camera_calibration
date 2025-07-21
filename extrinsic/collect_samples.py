@@ -12,7 +12,6 @@ import numpy as np
 from typing import List, Tuple, Dict
 from scipy.spatial.transform import Rotation as R
 from franky import *
-import itertools
 
 # =============================================================================
 # CONFIGURATION PARAMETERS - MODIFY THESE AS NEEDED
@@ -23,18 +22,15 @@ ROBOT_IP = "192.168.0.2"
 
 # Data collection paths
 DATA_DIR = "calibration_data"
-HAND_IMAGES_DIR = os.path.join(DATA_DIR, "hand_camera")
-EXTERNAL_IMAGES_DIR = os.path.join(DATA_DIR, "external_camera")
+EXTERNAL_1_IMAGES_DIR = os.path.join(DATA_DIR, "external_camera_1")
+EXTERNAL_2_IMAGES_DIR = os.path.join(DATA_DIR, "external_camera_2")
 EE_POSES_FILE = os.path.join(DATA_DIR, "ee_poses.json")
 
 # Camera configuration
-HAND_CAMERA_ID = 0      # USB camera ID for hand camera
-EXTERNAL_CAMERA_ID = 2  # USB camera ID for external camera
+EXTERNAL_1_CAM_ID = 0      # USB camera ID for hand camera
+EXTERNAL_2_CAM_ID = 2  # USB camera ID for external camera
 IMAGE_WIDTH = 640
 IMAGE_HEIGHT = 480
-
-# Camera settings - following calibration script pattern
-USE_AUTOFOCUS = "disabled"  # Options: "enabled", "disabled", "fixed"
 
 # Robot motion parameters
 ROBOT_DYNAMICS_FACTOR = 0.05  # Reduce speed for safety
@@ -45,13 +41,13 @@ SETTLE_TIME = 1.0  # Time to wait after reaching each pose (seconds)
 # DATA COLLECTION CLASS
 # =============================================================================
 
-class HandEyeDataCollector:
+class CamRobotDataCollector:
     """Collects calibration data for hand-eye calibration"""
 
     def __init__(self):
         self.robot = None
-        self.hand_camera = None
-        self.external_camera = None
+        self.external_1_cam = None
+        self.external_2_cam = None
         self.start_pose = None
         self.collected_data = {}
 
@@ -62,55 +58,44 @@ class HandEyeDataCollector:
         self.robot.recover_from_errors()
         self.robot.relative_dynamics_factor = ROBOT_DYNAMICS_FACTOR
 
-        home = JointMotion([0.0, -0.785, 0.0, -2.356, 0.0, 1.571, 0.785])
+        # home = JointMotion([0.0, -0.785, 0.0, -2.356, 0.0, 1.571, 0.785])
+        home = JointMotion([8.99296623e-01, -1.32415389e-01, -1.23771529e-04, -1.98783177e+00,
+                            -9.69793858e-01,  6.70015007e-01,  1.38359584e+00])
+
         self.robot.move(home)
 
-        motion = CartesianMotion(
-            Affine([0.0, 0.35, -0.13]), ReferenceType.Relative)
-        self.robot.move(motion)
+        time.sleep(1)
 
-        # Store starting pose
         self.start_pose = self.robot.current_cartesian_state.pose.end_effector_pose
         print(f"Starting pose recorded:")
         print(f"Position: {self.start_pose.translation}")
-        print(f"Quaternion:\n{self.start_pose.quaternion}")
+        print(f"Quaternion: {self.start_pose.quaternion}")
 
     def initialize_cameras(self):
         """Initialize camera connections following calibration script pattern"""
         print("Initializing cameras...")
 
         # Hand camera (on robot end-effector)
-        self.hand_camera = cv2.VideoCapture(HAND_CAMERA_ID)
-        if not self.hand_camera.isOpened():
-            raise RuntimeError(f"Failed to open hand camera {HAND_CAMERA_ID}")
+        self.external_1_cam = cv2.VideoCapture(EXTERNAL_1_CAM_ID)
+        if not self.external_1_cam.isOpened():
+            raise RuntimeError(
+                f"Failed to open camera {EXTERNAL_1_CAM_ID}")
 
         # External camera (static)
-        self.external_camera = cv2.VideoCapture(EXTERNAL_CAMERA_ID)
-        if not self.external_camera.isOpened():
+        self.external_2_cam = cv2.VideoCapture(EXTERNAL_2_CAM_ID)
+        if not self.external_2_cam.isOpened():
             raise RuntimeError(
-                f"Failed to open external camera {EXTERNAL_CAMERA_ID}")
+                f"Failed to open camera {EXTERNAL_2_CAM_ID}")
 
         # Configure both cameras with same settings
-        for camera, camera_name in [(self.hand_camera, "hand"), (self.external_camera, "external")]:
+        for camera, camera_name in [(self.external_1_cam, "external_1"), (self.external_2_cam, "external_2")]:
             # Set resolution
             camera.set(cv2.CAP_PROP_BUFFERSIZE, 1)
             camera.set(cv2.CAP_PROP_FRAME_WIDTH, IMAGE_WIDTH)
             camera.set(cv2.CAP_PROP_FRAME_HEIGHT, IMAGE_HEIGHT)
+            camera.set(cv2.CAP_PROP_AUTOFOCUS, 0)  # disabled
+            camera.set(cv2.CAP_PROP_FPS, 10)
 
-            # Handle autofocus based on setting
-            if USE_AUTOFOCUS == "enabled":
-                camera.set(cv2.CAP_PROP_AUTOFOCUS, 1)
-                print(f"{camera_name} camera autofocus: Enabled throughout capture")
-            elif USE_AUTOFOCUS == "disabled":
-                camera.set(cv2.CAP_PROP_AUTOFOCUS, 0)
-                print(f"{camera_name} camera autofocus: Disabled (manual focus)")
-            elif USE_AUTOFOCUS == "fixed":
-                # Enable autofocus initially, then disable after focusing
-                camera.set(cv2.CAP_PROP_AUTOFOCUS, 1)
-                print(
-                    f"{camera_name} camera autofocus: Enabled for initial focus, then will be fixed")
-
-            # Get actual resolution (may differ from requested)
             actual_width = int(camera.get(cv2.CAP_PROP_FRAME_WIDTH))
             actual_height = int(camera.get(cv2.CAP_PROP_FRAME_HEIGHT))
             print(
@@ -119,14 +104,6 @@ class HandEyeDataCollector:
             if actual_width != IMAGE_WIDTH or actual_height != IMAGE_HEIGHT:
                 print(
                     f"⚠ Warning: {camera_name} camera resolution differs from requested!")
-
-        # For "fixed" autofocus, let cameras focus then disable
-        if USE_AUTOFOCUS == "fixed":
-            print("Allowing cameras to focus...")
-            time.sleep(3)  # Give time to focus
-            self.hand_camera.set(cv2.CAP_PROP_AUTOFOCUS, 0)
-            self.external_camera.set(cv2.CAP_PROP_AUTOFOCUS, 0)
-            print("Autofocus now disabled - focus is fixed for both cameras")
 
         print("Cameras initialized successfully")
 
@@ -151,31 +128,39 @@ class HandEyeDataCollector:
 
         sample_id = 0
 
-        # # 1. Original pose (starting position)
-        # poses.append((start_position, start_quaternion,
-        #              f"sample_{sample_id:04d}"))
-        # sample_id += 1
-
-        # 2-3. Z up and down (±5cm)
-        for z_offset in [0.05, -0.05]:
+        for z_offset in [0.05, 0.025, -0.025, -0.05]:
             pos = start_position + np.array([0, 0, z_offset])
             poses.append((pos, start_quaternion, f"sample_{sample_id:04d}"))
             sample_id += 1
 
-        # 4-7. X positive and negative, Y positive and negative (±5cm)
-        for offset in [(0.05, 0, 0), (-0.05, 0, 0), (0, 0.05, 0), (0, -0.05, 0)]:
-            pos = start_position + np.array(offset)
+        for x_offset in [0.05, 0.025, -0.025, -0.05]:
+            pos = start_position + np.array([x_offset, 0, 0])
             poses.append((pos, start_quaternion, f"sample_{sample_id:04d}"))
             sample_id += 1
 
-        # 8-13. Original position with small rotations (±10 degrees)
+        for y_offset in [0.05, 0.025, -0.025, -0.05]:
+            pos = start_position + np.array([0, y_offset, 0])
+            poses.append((pos, start_quaternion, f"sample_{sample_id:04d}"))
+            sample_id += 1
+
         rotation_variations = [
-            (8, 0, 0),   # Roll +10°
-            (-8, 0, 0),  # Roll -10°
-            (0, 8, 0),   # Pitch +10°
-            (0, -8, 0),  # Pitch -10°
-            (0, 0, 8),   # Yaw +10°
-            (0, 0, -8)   # Yaw -10°
+            # roll
+            (5, 0, 0),
+            (-5, 0, 0),
+            (8, 0, 0),
+            (-8, 0, 0),
+
+            # pitch
+            (0, 5, 0),
+            (0, -5, 0),
+            (0, 8, 0),
+            (0, -8, 0),
+
+            # yaw
+            (0, 0, 5),
+            (0, 0, -5),
+            (0, 0, 8),
+            (0, 0, -8)
         ]
 
         for roll, pitch, yaw in rotation_variations:
@@ -187,25 +172,23 @@ class HandEyeDataCollector:
                          f"sample_{sample_id:04d}"))
             sample_id += 1
 
-        # 14-20. Random poses with position and rotation variations
         random_poses = [
             # Format: (x, y, z, roll, pitch, yaw)
-            (0.03, 0.02, 0.03, 8, -5, 12),
-            (-0.02, 0.04, -0.03, -12, 7, -8),
-            (0.04, -0.03, 0.03, 5, 3, -10),
-            (-0.03, -0.02, 0.03, -8, -12, 6),
-            (0.02, 0.05, -0.03, 8, -3, 9),
-            (-0.04, 0.01, 0.03, -6, 8, -11),
-            (0.01, -0.04, -0.02, 8, -7, 4)
+            (0.03, 0.02, 0.03, 8, -5, 4),
+            (-0.02, 0.04, -0.03, -9, 7, -4),
+            (0.04, -0.03, 0.03, 5, 3, -5),
+            (-0.03, -0.02, 0.03, -8, -8, 5),
+            (0.0, -0.02, -0.01, -1, 5, 1),
+            (0.0, -0.02, -0.01, -2, 1, 2),
+            (0.01, -0.02, 0.01, -3, 2, -4),
+            (0.01, -0.02, 0.01, -4, 0, -1),
         ]
 
         for x, y, z, roll, pitch, yaw in random_poses:
-            # Position
             pos = start_position + np.array([x, y, z])
-
-            # Rotation
             relative_rotation = R.from_euler(
                 'xyz', [roll, pitch, yaw], degrees=True)
+
             global_rotation = start_rotation * relative_rotation
             global_quaternion = global_rotation.as_quat()
 
@@ -218,50 +201,39 @@ class HandEyeDataCollector:
     def capture_images(self, sample_id: str) -> bool:
         """Capture images from both cameras with multiple attempts for stability"""
         try:
+            ret, img1 = self.external_1_cam.read()
+            ret, img1 = self.external_1_cam.read()
+            cv2.imshow("Cam1", img1)  # Added window name
+            cv2.waitKey(1)
+            if not ret:
+                print(f"Failed to capture image for {sample_id}")
 
-            # Capture hand camera image
-            ret_hand, hand_image = self.hand_camera.read()
-            # cv2.imshow("Hand Camera", hand_image)  # Added window name
-            # cv2.waitKey(1)
-            if not ret_hand:
-                print(f"Failed to capture hand camera image for {sample_id}")
-
-            # Capture external camera image
-            ret_external, external_image = self.external_camera.read()
-            # cv2.imshow("External Camera", external_image)
-            # cv2.waitKey(1)
-            if not ret_external:
+            ret, img2 = self.external_2_cam.read()
+            ret, img2 = self.external_2_cam.read()
+            cv2.imshow("Cam2", img2)
+            cv2.waitKey(1)
+            if not ret:
                 print(
-                    f"Failed to capture external camera image for {sample_id}")
+                    f"Failed to capture image for {sample_id}")
 
-            # Validate image quality (basic checks)
-            if hand_image is None or external_image is None:
-                print(f"Captured images are None for {sample_id}")
-                return False
+            external_1_path = os.path.join(
+                EXTERNAL_1_IMAGES_DIR, f"{sample_id}.jpg")
+            external_2_path = os.path.join(
+                EXTERNAL_2_IMAGES_DIR, f"{sample_id}.jpg")
 
-            if hand_image.size == 0 or external_image.size == 0:
-                print(f"Captured images are empty for {sample_id}")
-                return False
-
-            # Save images with high quality
-            hand_image_path = os.path.join(HAND_IMAGES_DIR, f"{sample_id}.jpg")
-            external_image_path = os.path.join(
-                EXTERNAL_IMAGES_DIR, f"{sample_id}.jpg")
-
-            # Use high quality JPEG settings
             jpeg_params = [cv2.IMWRITE_JPEG_QUALITY, 95]
 
-            success_hand = cv2.imwrite(
-                hand_image_path, hand_image, jpeg_params)
-            success_external = cv2.imwrite(
-                external_image_path, external_image, jpeg_params)
+            success_1 = cv2.imwrite(
+                external_1_path, img1, jpeg_params)
+            success_2 = cv2.imwrite(
+                external_2_path, img2, jpeg_params)
 
-            if not success_hand or not success_external:
+            if not success_1 or not success_2:
                 print(f"Failed to save images for {sample_id}")
                 return False
 
             print(
-                f"Images saved for {sample_id} (hand: {hand_image.shape}, external: {external_image.shape})")
+                f"Images saved for {sample_id} (img1: {img1.shape}, img2: {img2.shape})")
             return True
 
         except Exception as e:
@@ -350,12 +322,12 @@ class HandEyeDataCollector:
     def cleanup(self):
         """Clean up resources following calibration script pattern"""
         print("Cleaning up cameras...")
-        if self.hand_camera:
-            self.hand_camera.release()
-            print("Hand camera released")
-        if self.external_camera:
-            self.external_camera.release()
-            print("External camera released")
+        if self.external_1_cam:
+            self.external_1_cam.release()
+            print("External 2 camera released")
+        if self.external_2_cam:
+            self.external_2_cam.release()
+            print("External 1 camera released")
         cv2.destroyAllWindows()
         print("Camera cleanup complete")
 
@@ -386,17 +358,12 @@ class HandEyeDataCollector:
                     failed_samples += 1
                     print(f"Failed to collect sample {sample_id}")
 
-                # Optional: Add user confirmation for each sample
-                # response = input("Continue to next sample? (y/n): ")
-                # if response.lower() != 'y':
-                #     break
-
-            # Return to start
-            self.return_to_start()
-
             # Save data
             if successful_samples > 0:
                 self.save_data()
+
+            # Return to start
+            self.return_to_start()
 
             # Summary
             print(f"\n=== DATA COLLECTION SUMMARY ===")
@@ -415,8 +382,8 @@ class HandEyeDataCollector:
     def create_directories(self):
         """Create necessary directories"""
         os.makedirs(DATA_DIR, exist_ok=True)
-        os.makedirs(HAND_IMAGES_DIR, exist_ok=True)
-        os.makedirs(EXTERNAL_IMAGES_DIR, exist_ok=True)
+        os.makedirs(EXTERNAL_1_IMAGES_DIR, exist_ok=True)
+        os.makedirs(EXTERNAL_2_IMAGES_DIR, exist_ok=True)
         print(f"Created directories: {DATA_DIR}")
 
 # =============================================================================
@@ -429,18 +396,16 @@ def main():
     print("=== Hand-Eye Calibration Data Collection ===")
     print(f"Robot IP: {ROBOT_IP}")
     print(f"Data directory: {DATA_DIR}")
-    print(f"Hand camera: ID {HAND_CAMERA_ID}")
-    print(f"External camera: ID {EXTERNAL_CAMERA_ID}")
+    print(f"Hand camera: ID {EXTERNAL_1_CAM_ID}")
+    print(f"External camera: ID {EXTERNAL_2_CAM_ID}")
     print(f"Image resolution: {IMAGE_WIDTH}x{IMAGE_HEIGHT}")
-    print(f"Autofocus mode: {USE_AUTOFOCUS}")
 
     # Safety check
     print("SAFETY CHECKLIST:")
     print("1. ✓ Robot is powered on and FCI is enabled")
     print("2. ✓ Robot workspace is clear of obstacles")
-    print("3. ✓ ChArUco calibration board is positioned and visible")
+    print("3. ✓ Chess calibration board is positioned and visible")
     print("4. ✓ Both cameras are connected and working")
-    print("5. ✓ Camera intrinsic parameters are correctly set above")
     print("6. ✓ Emergency stop is accessible")
     print()
 
@@ -450,7 +415,7 @@ def main():
         return
 
     # Start data collection
-    collector = HandEyeDataCollector()
+    collector = CamRobotDataCollector()
     collector.collect_all_data()
 
 
