@@ -1,0 +1,111 @@
+{
+  "camera_matrix": [
+    [
+      570.0405177485454,
+      0.0,
+      313.4154159731944
+    ],
+    [
+      0.0,
+      576.7787838975363,
+      161.34780536807918
+    ],
+    [
+      0.0,
+      0.0,
+      1.0
+    ]
+  ],
+  "dist_coeffs": [
+    [
+      -0.1205836928956958
+    ],
+    [
+      0.39235209038074426
+    ],
+    [
+      -0.02296612165266461
+    ],
+    [
+      -0.00014971570559204172
+    ],
+    [
+      -0.7496496006126876
+    ]
+  ],
+  "image_size": [
+    640,
+    480
+  ],
+  "reprojection_error": 0.07126554641000052,
+  "per_image_errors": [
+    0.01936631481338937,
+    0.02069183675989606,
+    0.02375902341163062,
+    0.015619964247495666,
+    0.01789621658373249,
+    0.040059304086739356,
+    0.0272550566540992,
+    0.022966138032345613,
+    0.026292167057586385,
+    0.021466571323222633,
+    0.09749710950644593,
+    0.040420379128926875,
+    0.02153623414485391,
+    0.013284227869834176,
+    0.028187145571726534,
+    0.036009423506288565,
+    0.017233032628206187,
+    0.02285713884960973,
+    0.023109491279832167,
+    0.01649981390907585,
+    0.22896997690261123,
+    0.034070328992309495,
+    0.0245020840611484,
+    0.46417332182715765,
+    0.6753165407615752,
+    0.02751205342362416,
+    0.013865991480873197,
+    0.025771829062809663,
+    0.020512130012968897
+  ],
+  "valid_images": [
+    "calibration_images/calib_001.jpg",
+    "calibration_images/calib_002.jpg",
+    "calibration_images/calib_003.jpg",
+    "calibration_images/calib_004.jpg",
+    "calibration_images/calib_005.jpg",
+    "calibration_images/calib_006.jpg",
+    "calibration_images/calib_007.jpg",
+    "calibration_images/calib_008.jpg",
+    "calibration_images/calib_009.jpg",
+    "calibration_images/calib_010.jpg",
+    "calibration_images/calib_011.jpg",
+    "calibration_images/calib_012.jpg",
+    "calibration_images/calib_013.jpg",
+    "calibration_images/calib_014.jpg",
+    "calibration_images/calib_015.jpg",
+    "calibration_images/calib_016.jpg",
+    "calibration_images/calib_017.jpg",
+    "calibration_images/calib_018.jpg",
+    "calibration_images/calib_019.jpg",
+    "calibration_images/calib_020.jpg",
+    "calibration_images/calib_021.jpg",
+    "calibration_images/calib_022.jpg",
+    "calibration_images/calib_023.jpg",
+    "calibration_images/calib_024.jpg",
+    "calibration_images/calib_025.jpg",
+    "calibration_images/calib_026.jpg",
+    "calibration_images/calib_027.jpg",
+    "calibration_images/calib_028.jpg",
+    "calibration_images/calib_029.jpg"
+  ],
+  "timestamp": "20250722_140454",
+  "calibration_settings": {
+    "chessboard_size": [
+      7,
+      6
+    ],
+    "square_size_mm": 25.0
+  }
+}
