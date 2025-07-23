@@ -15,8 +15,8 @@ def main():
         return
 
     # Set camera properties
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1920)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 1080)
 
     print("Chessboard Detection - Press 'q' to quit")
     print(f"Looking for chessboard with {CHESSBOARD_SIZE} internal corners")

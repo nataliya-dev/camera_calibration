@@ -29,8 +29,8 @@ EE_POSES_FILE = os.path.join(DATA_DIR, "ee_poses.json")
 # Camera configuration
 EXTERNAL_1_CAM_ID = 0      # USB camera ID for hand camera
 EXTERNAL_2_CAM_ID = 2  # USB camera ID for external camera
-IMAGE_WIDTH = 640
-IMAGE_HEIGHT = 480
+IMAGE_WIDTH = 1920
+IMAGE_HEIGHT = 1080
 
 # Robot motion parameters
 ROBOT_DYNAMICS_FACTOR = 0.05  # Reduce speed for safety
@@ -59,8 +59,8 @@ class CamRobotDataCollector:
         self.robot.relative_dynamics_factor = ROBOT_DYNAMICS_FACTOR
 
         # home = JointMotion([0.0, -0.785, 0.0, -2.356, 0.0, 1.571, 0.785])
-        home = JointMotion([8.99296623e-01, -1.32415389e-01, -1.23771529e-04, -1.98783177e+00,
-                            -9.69793858e-01,  6.70015007e-01,  1.38359584e+00])
+        home = JointMotion([9.86168202e-01, -1.26735375e+00, -9.55441349e-04, -2.85675190e+00,
+                            -1.49717494e+00,  8.84785644e-01,  8.91454801e-01])
 
         self.robot.move(home)
 

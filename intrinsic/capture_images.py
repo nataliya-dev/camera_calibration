@@ -4,21 +4,21 @@ import time
 import numpy as np
 
 # Configuration parameters
-CAMERA_INDEX = 2  # Default camera (0 for built-in, 1+ for external)
+CAMERA_INDEX = 0  # Default camera (0 for built-in, 1+ for external)
 # Seconds between automatic captures (increased for stability)
 CAPTURE_INTERVAL = 2.0
-MIN_CAPTURES = 20  # Minimum number of images needed for calibration
-MAX_CAPTURES = 30  # Maximum number of images to capture
+MIN_CAPTURES = 30  # Minimum number of images needed for calibration
+MAX_CAPTURES = 40  # Maximum number of images to capture
 OUTPUT_DIR = "calibration_images"  # Directory to save captured images
 IMAGE_PREFIX = "calib_"  # Prefix for saved image files
 
 # Camera settings - IMPORTANT: Use the same resolution you'll use in your application!
-TARGET_WIDTH = 640  # Set to your target application width
-TARGET_HEIGHT = 480  # Set to your target application height
+TARGET_WIDTH = 1920  # Set to your target application width
+TARGET_HEIGHT = 1080  # Set to your target application height
 
 # Blur detection settings
 ENABLE_BLUR_DETECTION = True  # Reject blurry images automatically
-BLUR_THRESHOLD = 80.0  # Laplacian variance threshold (lower = more strict)
+BLUR_THRESHOLD = 50.0  # Laplacian variance threshold (lower = more strict)
 MIN_SHARPNESS_SCORE = 40.0  # Minimum sharpness for chessboard region
 
 # Chessboard configuration
@@ -134,7 +134,7 @@ def is_image_acceptable(image, corners, pattern_size):
 
     Args:
         image: Input image
-        corners: Detected chessboard corners  
+        corners: Detected chessboard corners
         pattern_size: Chessboard pattern size
 
     Returns:
