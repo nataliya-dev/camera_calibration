@@ -39,6 +39,7 @@ def get_camera_intrinsics_yaml(device_serials):
             # Get color stream intrinsics
             color_stream = profile.get_stream(rs.stream.color)
             color_intrinsics = color_stream.as_video_stream_profile().get_intrinsics()
+            print(color_intrinsics)
 
             # Format intrinsics data
             camera_intrinsics = {
