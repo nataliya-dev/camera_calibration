@@ -2,6 +2,7 @@
 """
 Hand-Eye Calibration Data Collection Script
 Collects robot poses and camera images for hand-eye calibration using franky control.
+Supports both USB cameras and RealSense cameras.
 """
 
 import os
@@ -9,9 +10,11 @@ import json
 import time
 import cv2
 import numpy as np
-from typing import List, Tuple, Dict
+from typing import List, Tuple, Dict, Optional
 from scipy.spatial.transform import Rotation as R
 from franky import *
+import pyrealsense2 as rs
+
 
 # =============================================================================
 # CONFIGURATION PARAMETERS - MODIFY THESE AS NEEDED
@@ -22,32 +25,174 @@ ROBOT_IP = "192.168.0.2"
 
 # Data collection paths
 DATA_DIR = "calibration_data"
-EXTERNAL_1_IMAGES_DIR = os.path.join(DATA_DIR, "external_camera_1")
-EXTERNAL_2_IMAGES_DIR = os.path.join(DATA_DIR, "external_camera_2")
 EE_POSES_FILE = os.path.join(DATA_DIR, "ee_poses.json")
-
-# Camera configuration
-EXTERNAL_1_CAM_ID = 0      # USB camera ID for hand camera
-EXTERNAL_2_CAM_ID = 2  # USB camera ID for external camera
-IMAGE_WIDTH = 1920
-IMAGE_HEIGHT = 1080
 
 # Robot motion parameters
 ROBOT_DYNAMICS_FACTOR = 0.05  # Reduce speed for safety
 SETTLE_TIME = 1.0  # Time to wait after reaching each pose (seconds)
 
+# Display configuration
+SHOW_PREVIEW_WINDOWS = True  # Set to False for automated data collection
+PREVIEW_RESIZE_FACTOR = 0.3   # Scale factor for preview windows (saves memory)
+
+# Camera configuration dictionary
+# Each camera can be either 'usb' or 'realsense' type
+CAMERA_CONFIG = {
+    "hand_camera": {
+        "type": "realsense",  # or "realsense"
+        "id": '913522070103',  # USB camera ID or RealSense serial number
+        "width": 1920,
+        "height": 1080,
+        "save_depth": False,  # Only applicable for RealSense
+        "directory": "r1"
+    },
+    "external_camera": {
+        "type": "realsense",  # or "realsense"
+        "id": '943222071556',  # USB camera ID or RealSense serial number
+        "width": 1920,
+        "height": 1080,
+        "save_depth": False,  # Only applicable for RealSense
+        "directory": "r2"
+    }
+    # Add more cameras as needed:
+    # "camera_3": {
+    #     "type": "realsense",
+    #     "id": "943222071556",  # RealSense serial number
+    #     "width": 1920,
+    #     "height": 1080,
+    #     "save_depth": True,
+    #     "directory": "realsense_camera_3"
+    # }
+}
+
+# =============================================================================
+# CAMERA WRAPPER CLASSES
+# =============================================================================
+
+
+class CameraBase:
+    """Base class for camera wrappers"""
+
+    def __init__(self, camera_id, width, height):
+        self.camera_id = camera_id
+        self.width = width
+        self.height = height
+
+    def initialize(self):
+        raise NotImplementedError
+
+    def capture(self):
+        raise NotImplementedError
+
+    def release(self):
+        raise NotImplementedError
+
+
+class USBCamera(CameraBase):
+    """USB Camera wrapper"""
+
+    def __init__(self, camera_id, width, height):
+        super().__init__(camera_id, width, height)
+        self.camera = None
+
+    def initialize(self):
+        self.camera = cv2.VideoCapture(self.camera_id)
+        if not self.camera.isOpened():
+            raise RuntimeError(f"Failed to open USB camera {self.camera_id}")
+
+        # Configure camera
+        self.camera.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        self.camera.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
+        self.camera.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
+        self.camera.set(cv2.CAP_PROP_AUTOFOCUS, 0)
+        self.camera.set(cv2.CAP_PROP_FPS, 30)
+
+        # Verify resolution
+        actual_width = int(self.camera.get(cv2.CAP_PROP_FRAME_WIDTH))
+        actual_height = int(self.camera.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        print(
+            f"USB camera {self.camera_id} - Requested: {self.width}x{self.height}, Actual: {actual_width}x{actual_height}")
+
+        if actual_width != self.width or actual_height != self.height:
+            print(
+                f"⚠ Warning: USB camera {self.camera_id} resolution differs from requested!")
+
+    def capture(self):
+        """Returns dict with 'color' key containing BGR image"""
+        ret, frame = self.camera.read()
+        ret, frame = self.camera.read()  # Double read for stability
+        if not ret:
+            raise RuntimeError(
+                f"Failed to capture from USB camera {self.camera_id}")
+        return {"color": frame}
+
+    def release(self):
+        if self.camera:
+            self.camera.release()
+
+
+class RealSenseCamera(CameraBase):
+    """RealSense Camera wrapper"""
+
+    def __init__(self, serial_number, width, height, save_depth=False):
+        super().__init__(serial_number, width, height)
+        self.serial_number = str(serial_number)
+        self.save_depth = save_depth
+        self.pipeline = None
+
+    def initialize(self):
+
+        self.pipeline = rs.pipeline()
+        config = rs.config()
+        config.enable_device(self.serial_number)
+        config.enable_stream(rs.stream.color, self.width,
+                             self.height, rs.format.bgr8, 30)
+
+        # if self.save_depth:
+        #     config.enable_stream(rs.stream.depth, self.width,
+        #                          self.height, rs.format.z16, 30)
+
+        self.pipeline.start(config)
+        print(
+            f"RealSense camera {self.serial_number} - Resolution: {self.width}x{self.height}, Depth: {self.save_depth}")
+
+    def capture(self):
+        """Returns dict with 'color' and optionally 'depth' keys"""
+        frames = self.pipeline.wait_for_frames()
+        color_frame = frames.get_color_frame()
+
+        if not color_frame:
+            raise RuntimeError(
+                f"Failed to capture color from RealSense {self.serial_number}")
+
+        result = {"color": np.asanyarray(color_frame.get_data())}
+
+        # if self.save_depth:
+        #     depth_frame = frames.get_depth_frame()
+        #     if depth_frame:
+        #         result["depth"] = np.asanyarray(depth_frame.get_data())
+        #     else:
+        #         print(
+        #             f"Warning: Failed to capture depth from RealSense {self.serial_number}")
+
+        return result
+
+    def release(self):
+        if self.pipeline:
+            self.pipeline.stop()
 
 # =============================================================================
 # DATA COLLECTION CLASS
 # =============================================================================
+
 
 class CamRobotDataCollector:
     """Collects calibration data for hand-eye calibration"""
 
     def __init__(self):
         self.robot = None
-        self.external_1_cam = None
-        self.external_2_cam = None
+        self.cameras = {}
+        self.camera_directories = {}
         self.start_pose = None
         self.collected_data = {}
 
@@ -58,13 +203,10 @@ class CamRobotDataCollector:
         self.robot.recover_from_errors()
         self.robot.relative_dynamics_factor = ROBOT_DYNAMICS_FACTOR
 
-        # home = JointMotion([0.0, -0.785, 0.0, -2.356, 0.0, 1.571, 0.785])
-        home = JointMotion([9.86168202e-01, -1.26735375e+00, -9.55441349e-04, -2.85675190e+00,
-                            -1.49717494e+00,  8.84785644e-01,  8.91454801e-01])
+        home = JointMotion([8.90512496e-01, -3.02871668e-01, -2.54106958e-04, -2.59768526e+00,
+                            -9.54882244e-01,  1.01583728e+00,  1.67246430e+00])
 
         self.robot.move(home)
-
-        time.sleep(1)
 
         self.start_pose = self.robot.current_cartesian_state.pose.end_effector_pose
         print(f"Starting pose recorded:")
@@ -72,43 +214,38 @@ class CamRobotDataCollector:
         print(f"Quaternion: {self.start_pose.quaternion}")
 
     def initialize_cameras(self):
-        """Initialize camera connections following calibration script pattern"""
+        """Initialize all configured cameras"""
         print("Initializing cameras...")
 
-        # Hand camera (on robot end-effector)
-        self.external_1_cam = cv2.VideoCapture(EXTERNAL_1_CAM_ID)
-        if not self.external_1_cam.isOpened():
-            raise RuntimeError(
-                f"Failed to open camera {EXTERNAL_1_CAM_ID}")
+        for camera_name, config in CAMERA_CONFIG.items():
+            print(f"Setting up {camera_name} ({config['type']})...")
 
-        # External camera (static)
-        self.external_2_cam = cv2.VideoCapture(EXTERNAL_2_CAM_ID)
-        if not self.external_2_cam.isOpened():
-            raise RuntimeError(
-                f"Failed to open camera {EXTERNAL_2_CAM_ID}")
+            # Create camera directory
+            camera_dir = os.path.join(DATA_DIR, config["directory"])
+            os.makedirs(camera_dir, exist_ok=True)
+            self.camera_directories[camera_name] = camera_dir
 
-        # Configure both cameras with same settings
-        for camera, camera_name in [(self.external_1_cam, "external_1"), (self.external_2_cam, "external_2")]:
-            # Set resolution
-            camera.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-            camera.set(cv2.CAP_PROP_FRAME_WIDTH, IMAGE_WIDTH)
-            camera.set(cv2.CAP_PROP_FRAME_HEIGHT, IMAGE_HEIGHT)
-            camera.set(cv2.CAP_PROP_AUTOFOCUS, 0)  # disabled
-            camera.set(cv2.CAP_PROP_FPS, 10)
+            # Create appropriate camera wrapper
+            if config["type"] == "usb":
+                camera = USBCamera(
+                    config["id"], config["width"], config["height"])
+            elif config["type"] == "realsense":
+                camera = RealSenseCamera(
+                    config["id"],
+                    config["width"],
+                    config["height"],
+                    config.get("save_depth", False)
+                )
+            else:
+                raise ValueError(f"Unknown camera type: {config['type']}")
 
-            actual_width = int(camera.get(cv2.CAP_PROP_FRAME_WIDTH))
-            actual_height = int(camera.get(cv2.CAP_PROP_FRAME_HEIGHT))
-            print(
-                f"{camera_name} camera - Requested: {IMAGE_WIDTH}x{IMAGE_HEIGHT}, Actual: {actual_width}x{actual_height}")
+            # Initialize camera
+            camera.initialize()
+            self.cameras[camera_name] = camera
 
-            if actual_width != IMAGE_WIDTH or actual_height != IMAGE_HEIGHT:
-                print(
-                    f"⚠ Warning: {camera_name} camera resolution differs from requested!")
-
-        print("Cameras initialized successfully")
+        print(f"Successfully initialized {len(self.cameras)} cameras")
 
     def generate_poses(self) -> List[Tuple[np.ndarray, np.ndarray, str]]:
-        """Generate exactly 20 target poses for data collection"""
         poses = []
 
         # Ensure start pose is recorded
@@ -128,39 +265,35 @@ class CamRobotDataCollector:
 
         sample_id = 0
 
-        for z_offset in [0.05, 0.025, -0.025, -0.05]:
+        # Z-axis translations
+        for z_offset in [0.1, 0.08, 0.05, 0.025, -0.025, -0.05, -0.08, -0.1]:
             pos = start_position + np.array([0, 0, z_offset])
             poses.append((pos, start_quaternion, f"sample_{sample_id:04d}"))
             sample_id += 1
 
+        # X-axis translations
         for x_offset in [0.05, 0.025, -0.025, -0.05]:
             pos = start_position + np.array([x_offset, 0, 0])
             poses.append((pos, start_quaternion, f"sample_{sample_id:04d}"))
             sample_id += 1
 
-        for y_offset in [0.05, 0.025, -0.025, -0.05]:
+        # Y-axis translations
+        for y_offset in [00.1, 0.08, 0.05, 0.025, -0.025, -0.05, -0.08, -0.1]:
             pos = start_position + np.array([0, y_offset, 0])
             poses.append((pos, start_quaternion, f"sample_{sample_id:04d}"))
             sample_id += 1
 
+        # Rotation variations
         rotation_variations = [
-            # roll
-            (5, 0, 0),
-            (-5, 0, 0),
-            (8, 0, 0),
-            (-8, 0, 0),
+            # roll, pitch, yaw in degrees
+            (5, 0, 0), (-5, 0, 0), (8, 0, 0), (-8, 0, 0),  # roll
+            (0, 5, 0), (0, -5, 0), (0, 8, 0), (0, -8, 0),  # pitch
+            (0, 0, 5), (0, 0, -5), (0, 0, 8), (0, 0, -8),   # yaw
 
-            # pitch
-            (0, 5, 0),
-            (0, -5, 0),
-            (0, 8, 0),
-            (0, -8, 0),
+            (10, 0, 0), (-10, 0, 0), (13, 0, 0), (-13, 0, 0),  # roll
+            (0, 10, 0), (0, -10, 0), (0, 13, 0), (0, -13, 0),  # pitch
+            (0, 0, 10), (0, 0, -10), (0, 0, 13), (0, 0, -13)   # yaw
 
-            # yaw
-            (0, 0, 5),
-            (0, 0, -5),
-            (0, 0, 8),
-            (0, 0, -8)
         ]
 
         for roll, pitch, yaw in rotation_variations:
@@ -172,68 +305,100 @@ class CamRobotDataCollector:
                          f"sample_{sample_id:04d}"))
             sample_id += 1
 
-        random_poses = [
-            # Format: (x, y, z, roll, pitch, yaw)
-            (0.03, 0.02, 0.03, 8, -5, 4),
-            (-0.02, 0.04, -0.03, -9, 7, -4),
-            (0.04, -0.03, 0.03, 5, 3, -5),
-            (-0.03, -0.02, 0.03, -8, -8, 5),
-            (0.0, -0.02, -0.01, -1, 5, 1),
-            (0.0, -0.02, -0.01, -2, 1, 2),
-            (0.01, -0.02, 0.01, -3, 2, -4),
-            (0.01, -0.02, 0.01, -4, 0, -1),
-        ]
+        # Random poses - define your workspace limits here
+        position_limits = {
+            'x': (-0.1, 0.2),  # ±15cm from start position
+            'y': (-0.15, 0.15),  # ±15cm from start position
+            'z': (-0.12, 0.12)   # ±12cm from start position
+        }
 
-        for x, y, z, roll, pitch, yaw in random_poses:
-            pos = start_position + np.array([x, y, z])
-            relative_rotation = R.from_euler(
+        rotation_limits = {
+            'roll': (-20, 20),   # ±20 degrees
+            'pitch': (-20, 20),  # ±20 degrees
+            'yaw': (-20, 20)     # ±20 degrees
+        }
+
+        num_random_poses = 10  # Adjust as needed
+
+        print(f"Generating {num_random_poses} random poses...")
+
+        # Set random seed for reproducibility (optional)
+        np.random.seed(42)
+
+        for i in range(num_random_poses):
+            # Random position offset
+            x_offset = np.random.uniform(
+                position_limits['x'][0], position_limits['x'][1])
+            y_offset = np.random.uniform(
+                position_limits['y'][0], position_limits['y'][1])
+            z_offset = np.random.uniform(
+                position_limits['z'][0], position_limits['z'][1])
+
+            random_position = start_position + \
+                np.array([x_offset, y_offset, z_offset])
+
+            # Random orientation
+            roll = np.random.uniform(
+                rotation_limits['roll'][0], rotation_limits['roll'][1])
+            pitch = np.random.uniform(
+                rotation_limits['pitch'][0], rotation_limits['pitch'][1])
+            yaw = np.random.uniform(
+                rotation_limits['yaw'][0], rotation_limits['yaw'][1])
+
+            random_rotation = R.from_euler(
                 'xyz', [roll, pitch, yaw], degrees=True)
+            global_rotation = start_rotation * random_rotation
+            random_quaternion = global_rotation.as_quat()
 
-            global_rotation = start_rotation * relative_rotation
-            global_quaternion = global_rotation.as_quat()
-
-            poses.append((pos, global_quaternion, f"sample_{sample_id:04d}"))
+            poses.append((random_position, random_quaternion,
+                         f"sample_{sample_id:04d}_random"))
             sample_id += 1
 
         print(f"Generated exactly {len(poses)} target poses")
         return poses
 
     def capture_images(self, sample_id: str) -> bool:
-        """Capture images from both cameras with multiple attempts for stability"""
+        """Capture images from all cameras"""
         try:
-            ret, img1 = self.external_1_cam.read()
-            ret, img1 = self.external_1_cam.read()
-            cv2.imshow("Cam1", img1)  # Added window name
-            cv2.waitKey(1)
-            if not ret:
-                print(f"Failed to capture image for {sample_id}")
+            for camera_name, camera in self.cameras.items():
+                # Capture from camera
+                captured_data = camera.capture()
 
-            ret, img2 = self.external_2_cam.read()
-            ret, img2 = self.external_2_cam.read()
-            cv2.imshow("Cam2", img2)
-            cv2.waitKey(1)
-            if not ret:
-                print(
-                    f"Failed to capture image for {sample_id}")
+                # Optional preview (can be disabled for automated collection)
+                if SHOW_PREVIEW_WINDOWS:
+                    preview_img = captured_data["color"]
+                    # Resize for preview to save memory
+                    if PREVIEW_RESIZE_FACTOR != 1.0:
+                        new_size = (int(preview_img.shape[1] * PREVIEW_RESIZE_FACTOR),
+                                    int(preview_img.shape[0] * PREVIEW_RESIZE_FACTOR))
+                        preview_img = cv2.resize(preview_img, new_size)
 
-            external_1_path = os.path.join(
-                EXTERNAL_1_IMAGES_DIR, f"{sample_id}.jpg")
-            external_2_path = os.path.join(
-                EXTERNAL_2_IMAGES_DIR, f"{sample_id}.jpg")
+                    cv2.imshow(f"{camera_name}_preview", preview_img)
+                    cv2.waitKey(1)  # Non-blocking update
 
-            jpeg_params = [cv2.IMWRITE_JPEG_QUALITY, 95]
+                # Save color image
+                color_path = os.path.join(
+                    self.camera_directories[camera_name], f"{sample_id}.jpg")
+                jpeg_params = [cv2.IMWRITE_JPEG_QUALITY, 95]
+                success = cv2.imwrite(
+                    color_path, captured_data["color"], jpeg_params)
 
-            success_1 = cv2.imwrite(
-                external_1_path, img1, jpeg_params)
-            success_2 = cv2.imwrite(
-                external_2_path, img2, jpeg_params)
+                if not success:
+                    print(f"Failed to save color image for {camera_name}")
+                    return False
 
-            if not success_1 or not success_2:
-                print(f"Failed to save images for {sample_id}")
-                return False
+                # # Save depth image if available
+                # if "depth" in captured_data:
+                #     depth_path = os.path.join(
+                #         self.camera_directories[camera_name], f"{sample_id}_depth.png")
+                #     success = cv2.imwrite(depth_path, captured_data["depth"])
 
-            print(
-                f"Images saved for {sample_id} (img1: {img1.shape}, img2: {img2.shape})")
+                #     if not success:
+                #         print(f"Failed to save depth image for {camera_name}")
+                #         return False
+
+                print(f"Images saved for {camera_name} - {sample_id}")
+
             return True
 
         except Exception as e:
@@ -246,24 +411,20 @@ class CamRobotDataCollector:
             transform = Affine(position.tolist(), quaternion.tolist())
             motion = CartesianMotion(transform)
 
-            # Execute motion
             print(f"Moving to pose: pos={position}, quat={quaternion}")
             self.robot.move(motion)
-            # Wait for robot to settle
             time.sleep(SETTLE_TIME)
 
             # Verify we reached the target pose
             current_state = self.robot.current_cartesian_state
             current_pose = current_state.pose.end_effector_pose
-
-            # Check position accuracy
             pos_error = np.linalg.norm(
                 np.array(current_pose.translation) - position)
 
             if pos_error > 0.01:  # 1cm tolerance
                 print(
                     f"Warning: Position error {pos_error:.4f}m - waiting additional time")
-                time.sleep(1.0)  # Additional settling time
+                time.sleep(1.0)
             else:
                 print(f"Pose reached. Position error: {pos_error:.4f}m")
 
@@ -304,7 +465,6 @@ class CamRobotDataCollector:
         """Return robot to starting pose"""
         print("\nReturning to starting pose...")
         try:
-            # Create motion to starting pose
             motion = CartesianMotion(self.start_pose)
             self.robot.move(motion)
             time.sleep(SETTLE_TIME)
@@ -320,16 +480,18 @@ class CamRobotDataCollector:
         print(f"Saved {len(self.collected_data)} samples")
 
     def cleanup(self):
-        """Clean up resources following calibration script pattern"""
+        """Clean up resources"""
         print("Cleaning up cameras...")
-        if self.external_1_cam:
-            self.external_1_cam.release()
-            print("External 2 camera released")
-        if self.external_2_cam:
-            self.external_2_cam.release()
-            print("External 1 camera released")
+        for camera_name, camera in self.cameras.items():
+            camera.release()
+            print(f"{camera_name} released")
         cv2.destroyAllWindows()
         print("Camera cleanup complete")
+
+    def create_directories(self):
+        """Create necessary directories"""
+        os.makedirs(DATA_DIR, exist_ok=True)
+        print(f"Created data directory: {DATA_DIR}")
 
     def collect_all_data(self):
         """Main data collection loop"""
@@ -379,13 +541,6 @@ class CamRobotDataCollector:
         finally:
             self.cleanup()
 
-    def create_directories(self):
-        """Create necessary directories"""
-        os.makedirs(DATA_DIR, exist_ok=True)
-        os.makedirs(EXTERNAL_1_IMAGES_DIR, exist_ok=True)
-        os.makedirs(EXTERNAL_2_IMAGES_DIR, exist_ok=True)
-        print(f"Created directories: {DATA_DIR}")
-
 # =============================================================================
 # MAIN EXECUTION
 # =============================================================================
@@ -396,17 +551,21 @@ def main():
     print("=== Hand-Eye Calibration Data Collection ===")
     print(f"Robot IP: {ROBOT_IP}")
     print(f"Data directory: {DATA_DIR}")
-    print(f"Hand camera: ID {EXTERNAL_1_CAM_ID}")
-    print(f"External camera: ID {EXTERNAL_2_CAM_ID}")
-    print(f"Image resolution: {IMAGE_WIDTH}x{IMAGE_HEIGHT}")
+
+    print("\nConfigured cameras:")
+    for camera_name, config in CAMERA_CONFIG.items():
+        print(
+            f"  {camera_name}: {config['type']} (ID: {config['id']}, {config['width']}x{config['height']})")
+        if config['type'] == 'realsense' and config.get('save_depth', False):
+            print(f"    - Depth capture enabled")
 
     # Safety check
-    print("SAFETY CHECKLIST:")
+    print("\nSAFETY CHECKLIST:")
     print("1. ✓ Robot is powered on and FCI is enabled")
     print("2. ✓ Robot workspace is clear of obstacles")
     print("3. ✓ Chess calibration board is positioned and visible")
-    print("4. ✓ Both cameras are connected and working")
-    print("6. ✓ Emergency stop is accessible")
+    print("4. ✓ All cameras are connected and working")
+    print("5. ✓ Emergency stop is accessible")
     print()
 
     response = input("All safety checks complete? (y/n): ")
