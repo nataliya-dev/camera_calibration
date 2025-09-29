@@ -253,27 +253,6 @@ def save_calibration_results(camera_matrix, dist_coeffs, image_size, reprojectio
     """
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-    # # Save as NumPy arrays
-    # np.savez(os.path.join(output_dir, f"camera_params_{timestamp}.npz"),
-    #          camera_matrix=camera_matrix,
-    #          dist_coeffs=dist_coeffs,
-    #          image_size=image_size,
-    #          reprojection_error=reprojection_error)
-
-    # Save as pickle (for easy Python loading)
-    # calibration_data = {
-    #     'camera_matrix': camera_matrix,
-    #     'dist_coeffs': dist_coeffs,
-    #     'image_size': image_size,
-    #     'reprojection_error': reprojection_error,
-    #     'per_image_errors': per_image_errors,
-    #     'valid_images': valid_images,
-    #     'timestamp': timestamp
-    # }
-
-    # with open(os.path.join(output_dir, f"calibration_data_{timestamp}.pkl"), 'wb') as f:
-    #     pickle.dump(calibration_data, f)
-
     # Save as JSON (human-readable)
     json_data = {
         'camera_matrix': camera_matrix.tolist(),

@@ -3,7 +3,7 @@ import numpy as np
 import open3d as o3d
 
 # Device serial numbers
-device_serials = ['913522070103', '943222071556']
+device_serials = ['943222071556']  # '913522070103',
 
 
 def capture_pointcloud():

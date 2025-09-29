@@ -13,8 +13,12 @@ import numpy as np
 from typing import List, Tuple, Dict, Optional
 from scipy.spatial.transform import Rotation as R
 from franky import *
-import pyrealsense2 as rs
+# import pyrealsense2 as rs
 
+import depthai as dai
+import json
+import numpy as np
+from datetime import datetime
 
 # =============================================================================
 # CONFIGURATION PARAMETERS - MODIFY THESE AS NEEDED
@@ -38,22 +42,22 @@ PREVIEW_RESIZE_FACTOR = 0.3   # Scale factor for preview windows (saves memory)
 # Camera configuration dictionary
 # Each camera can be either 'usb' or 'realsense' type
 CAMERA_CONFIG = {
-    "hand_camera": {
-        "type": "realsense",  # or "realsense"
-        "id": '913522070103',  # USB camera ID or RealSense serial number
-        "width": 1920,
-        "height": 1080,
-        "save_depth": False,  # Only applicable for RealSense
-        "directory": "r1"
-    },
-    "external_camera": {
-        "type": "realsense",  # or "realsense"
-        "id": '943222071556',  # USB camera ID or RealSense serial number
-        "width": 1920,
-        "height": 1080,
-        "save_depth": False,  # Only applicable for RealSense
-        "directory": "r2"
-    }
+    # "hand_camera": {
+    #     "type": "realsense",  # or "realsense"
+    #     "id": '913522070103',  # USB camera ID or RealSense serial number
+    #     "width": 1920,
+    #     "height": 1080,
+    #     "save_depth": False,  # Only applicable for RealSense
+    #     "directory": "r1"
+    # },
+    # "external_camera": {
+    #     "type": "realsense",  # or "realsense"
+    #     "id": '943222071556',  # USB camera ID or RealSense serial number
+    #     "width": 1920,
+    #     "height": 1080,
+    #     "save_depth": False,  # Only applicable for RealSense
+    #     "directory": "r2"
+    # }
     # Add more cameras as needed:
     # "camera_3": {
     #     "type": "realsense",
@@ -63,6 +67,15 @@ CAMERA_CONFIG = {
     #     "save_depth": True,
     #     "directory": "realsense_camera_3"
     # }
+
+    "ext2": {
+        "type": "depthai",  # "usb", "realsense", or "depthai"
+        "id": dai.CameraBoardSocket.CAM_A,  # or CAM_B, CAM_C
+        "width": 1920,
+        "height": 1080,
+        "directory": "ext2"
+    },
+
 }
 
 # =============================================================================
@@ -86,6 +99,47 @@ class CameraBase:
 
     def release(self):
         raise NotImplementedError
+
+
+class DepthAICamera(CameraBase):
+    """DepthAI/Luxonis Camera wrapper"""
+
+    def __init__(self, camera_socket, width, height):
+        super().__init__(camera_socket, width, height)
+        self.camera_socket = camera_socket
+        self.pipeline = None
+        self.device = None
+        self.video_queue = None
+
+    def initialize(self):
+        # Create pipeline
+        self.pipeline = dai.Pipeline()
+
+        # Create camera node
+        cam = self.pipeline.create(dai.node.Camera).build()
+        self.video_queue_name = "video"
+
+        # Start pipeline and get queue
+        self.device = dai.Device(self.pipeline)
+        cam_output = cam.requestOutput((self.width, self.height))
+        self.video_queue = cam_output.createOutputQueue()
+
+        self.pipeline.start()
+        print(
+            f"DepthAI camera {self.camera_socket} - Resolution: {self.width}x{self.height}")
+
+    def capture(self):
+        """Returns dict with 'color' key containing BGR image"""
+        video_in = self.video_queue.get()
+        if not isinstance(video_in, dai.ImgFrame):
+            raise RuntimeError(f"Failed to capture from DepthAI camera")
+
+        frame = video_in.getCvFrame()
+        return {"color": frame}
+
+    def release(self):
+        if self.device:
+            self.device.close()
 
 
 class USBCamera(CameraBase):
@@ -235,6 +289,12 @@ class CamRobotDataCollector:
                     config["width"],
                     config["height"],
                     config.get("save_depth", False)
+                )
+            elif config["type"] == "depthai":
+                camera = DepthAICamera(
+                    config["id"],
+                    config["width"],
+                    config["height"]
                 )
             else:
                 raise ValueError(f"Unknown camera type: {config['type']}")
